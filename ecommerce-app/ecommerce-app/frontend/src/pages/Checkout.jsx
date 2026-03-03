@@ -9,7 +9,43 @@ import { CreditCard, MapPin, ShoppingBag } from 'lucide-react';
 
 const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
 
-const initialAddress = { name: '', line1: '', line2: '', city: '', state: '', zip: '', country: 'US' };
+const initialAddress = { name: '', line1: '', line2: '', city: '', state: '', zip: '', country: 'GR' };
+const EUROPE_COUNTRIES = [
+  { code: 'GR', label: 'Greece' },
+  { code: 'CY', label: 'Cyprus' },
+  { code: 'IT', label: 'Italy' },
+  { code: 'DE', label: 'Germany' },
+  { code: 'FR', label: 'France' },
+  { code: 'ES', label: 'Spain' },
+  { code: 'PT', label: 'Portugal' },
+  { code: 'NL', label: 'Netherlands' },
+  { code: 'BE', label: 'Belgium' },
+  { code: 'AT', label: 'Austria' },
+  { code: 'IE', label: 'Ireland' },
+  { code: 'LU', label: 'Luxembourg' },
+  { code: 'MT', label: 'Malta' },
+  { code: 'SI', label: 'Slovenia' },
+  { code: 'SK', label: 'Slovakia' },
+  { code: 'CZ', label: 'Czechia' },
+  { code: 'PL', label: 'Poland' },
+  { code: 'HU', label: 'Hungary' },
+  { code: 'RO', label: 'Romania' },
+  { code: 'BG', label: 'Bulgaria' },
+  { code: 'HR', label: 'Croatia' },
+  { code: 'SE', label: 'Sweden' },
+  { code: 'DK', label: 'Denmark' },
+  { code: 'FI', label: 'Finland' },
+  { code: 'EE', label: 'Estonia' },
+  { code: 'LV', label: 'Latvia' },
+  { code: 'LT', label: 'Lithuania' },
+];
+
+function formatEUR(amount) {
+  return new Intl.NumberFormat('el-GR', {
+    style: 'currency',
+    currency: 'EUR',
+  }).format(amount);
+}
 
 export default function Checkout() {
   const { items, subtotal, discount, total, coupon, clearCart } = useCart();
@@ -31,8 +67,8 @@ export default function Checkout() {
     setProcessing(true);
     try {
       const token = await user.getIdToken();
-      const baseUrl = `https://us-central1-${import.meta.env.VITE_FIREBASE_PROJECT_ID}.cloudfunctions.net`;
-      const response = await fetch(`${baseUrl}/createCheckoutSessionHttp`, {
+      const baseUrl = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${baseUrl}/api/createCheckoutSession`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -113,10 +149,9 @@ export default function Checkout() {
                 <div>
                   <label className="text-sm font-medium block mb-1">Country</label>
                   <select value={address.country} onChange={update('country')} className={fieldClass}>
-                    <option value="US">United States</option>
-                    <option value="CA">Canada</option>
-                    <option value="GB">United Kingdom</option>
-                    <option value="AU">Australia</option>
+                    {EUROPE_COUNTRIES.map((country) => (
+                      <option key={country.code} value={country.code}>{country.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -133,7 +168,7 @@ export default function Checkout() {
                   {processing ? (
                     <><LoadingSpinner size="sm" /> Processing...</>
                   ) : (
-                    <><CreditCard size={18} /> Pay ${grandTotal.toFixed(2)}</>
+                    <><CreditCard size={18} /> Pay {formatEUR(grandTotal)}</>
                   )}
                 </button>
               </div>
@@ -155,28 +190,28 @@ export default function Checkout() {
                     <p className="text-sm font-medium line-clamp-1">{item.name}</p>
                     <p className="text-xs text-surface-500">Qty: {item.quantity}</p>
                   </div>
-                  <span className="text-sm font-medium">${(item.price * item.quantity).toFixed(2)}</span>
+                  <span className="text-sm font-medium">{formatEUR(item.price * item.quantity)}</span>
                 </div>
               ))}
             </div>
             <div className="space-y-2 text-sm border-t border-surface-200 dark:border-surface-700 pt-4">
               <div className="flex justify-between">
                 <span className="text-surface-500">Subtotal</span>
-                <span>${subtotal.toFixed(2)}</span>
+                <span>{formatEUR(subtotal)}</span>
               </div>
               {discount > 0 && (
                 <div className="flex justify-between text-green-600">
                   <span>Discount {coupon && `(${coupon.code})`}</span>
-                  <span>-${discount.toFixed(2)}</span>
+                  <span>-{formatEUR(discount)}</span>
                 </div>
               )}
               <div className="flex justify-between">
                 <span className="text-surface-500">Shipping</span>
-                <span className={shipping === 0 ? 'text-green-600' : ''}>{shipping === 0 ? 'FREE' : `$${shipping.toFixed(2)}`}</span>
+                <span className={shipping === 0 ? 'text-green-600' : ''}>{shipping === 0 ? 'FREE' : formatEUR(shipping)}</span>
               </div>
               <div className="border-t border-surface-200 dark:border-surface-700 pt-2 flex justify-between font-bold text-base">
                 <span>Total</span>
-                <span className="text-primary-500">${grandTotal.toFixed(2)}</span>
+                <span className="text-primary-500">{formatEUR(grandTotal)}</span>
               </div>
             </div>
           </div>

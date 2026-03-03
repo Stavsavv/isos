@@ -19,14 +19,22 @@ export function CartProvider({ children }) {
     }
 
     const cartRef = doc(db, 'carts', user.uid);
-    const unsubscribe = onSnapshot(cartRef, (snap) => {
-      if (snap.exists()) {
-        setItems(snap.data().items || []);
-        setCoupon(snap.data().coupon || null);
-      } else {
+    const unsubscribe = onSnapshot(
+      cartRef,
+      (snap) => {
+        if (snap.exists()) {
+          setItems(snap.data().items || []);
+          setCoupon(snap.data().coupon || null);
+        } else {
+          setItems([]);
+        }
+      },
+      (error) => {
+        console.error('Cart listener error:', error);
         setItems([]);
+        setCoupon(null);
       }
-    });
+    );
 
     return unsubscribe;
   }, [user]);

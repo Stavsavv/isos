@@ -11,14 +11,16 @@
   },
   "dependencies": {
     "@stripe/stripe-js": "^3.0.0",
+    "date-fns": "^3.0.6",
     "firebase": "^10.7.0",
+    "firebase-admin": "^12.7.0",
+    "lucide-react": "^0.309.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.21.0",
     "react-hot-toast": "^2.4.1",
+    "react-router-dom": "^6.21.0",
     "recharts": "^2.10.0",
-    "lucide-react": "^0.309.0",
-    "date-fns": "^3.0.6"
+    "stripe": "^16.12.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

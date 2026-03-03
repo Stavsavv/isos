@@ -12,10 +12,17 @@ export function WishlistProvider({ children }) {
   useEffect(() => {
     if (!user) { setItems([]); return; }
     const ref = doc(db, 'wishlists', user.uid);
-    const unsub = onSnapshot(ref, (snap) => {
-      if (snap.exists()) setItems(snap.data().items || []);
-      else setItems([]);
-    });
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        if (snap.exists()) setItems(snap.data().items || []);
+        else setItems([]);
+      },
+      (error) => {
+        console.error('Wishlist listener error:', error);
+        setItems([]);
+      }
+    );
     return unsub;
   }, [user]);
 
