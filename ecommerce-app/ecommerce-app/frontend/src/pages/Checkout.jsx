@@ -1,7 +1,5 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { httpsCallable } from 'firebase/functions';
-import { functions } from '../firebase/config.js';
 import { useCart } from '../context/CartContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { loadStripe } from '@stripe/stripe-js';
@@ -32,25 +30,40 @@ export default function Checkout() {
     e.preventDefault();
     setProcessing(true);
     try {
-      // Create Stripe checkout session via Cloud Function
-      const createCheckoutSession = httpsCallable(functions, 'createCheckoutSession');
-      const result = await createCheckoutSession({
-        items,
-        shippingAddress: address,
-        couponCode: coupon?.code,
-        userId: user.uid,
-        successUrl: `${window.location.origin}/profile?order=success`,
-        cancelUrl: `${window.location.origin}/checkout`,
+      const token = await user.getIdToken();
+      const baseUrl = `https://us-central1-${import.meta.env.VITE_FIREBASE_PROJECT_ID}.cloudfunctions.net`;
+      const response = await fetch(`${baseUrl}/createCheckoutSessionHttp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          items,
+          shippingAddress: address,
+          couponCode: coupon?.code,
+          successUrl: `${window.location.origin}/profile?order=success`,
+          cancelUrl: `${window.location.origin}/checkout`,
+        }),
       });
 
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || 'Failed to create checkout session');
+      }
+
+      const result = await response.json();
+      const sessionId = result?.sessionId;
+      if (!sessionId) throw new Error('Missing Stripe session id');
+
       const stripe = await stripePromise;
-      const { error } = await stripe.redirectToCheckout({ sessionId: result.data.sessionId });
+      const { error } = await stripe.redirectToCheckout({ sessionId });
       if (error) {
         toast.error(error.message);
       }
     } catch (err) {
       console.error(err);
-      toast.error('Payment failed. Please try again.');
+      toast.error(err.message || 'Payment failed. Please try again.');
     } finally {
       setProcessing(false);
     }

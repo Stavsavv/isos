@@ -2,16 +2,69 @@ import { useState, useEffect } from 'react';
 import {
   collection, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, orderBy, query,
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../firebase/config.js';
+import { db } from '../firebase/config.js';
 import AdminLayout from '../components/AdminLayout.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import toast from 'react-hot-toast';
-import { Plus, Edit, Trash2, X, Upload, Star } from 'lucide-react';
+import { Plus, Edit, Trash2, X, Star, Upload } from 'lucide-react';
 
 const CATEGORIES = ['Electronics', 'Clothing', 'Books', 'Home & Garden', 'Sports', 'Beauty', 'Toys', 'Automotive'];
 
 const initialForm = { name: '', description: '', price: '', category: CATEGORIES[0], stock: '', images: [] };
+const TARGET_IMAGE_BYTES = 250 * 1024;
+const MAX_IMAGE_BYTES = 450 * 1024;
+const MAX_IMAGE_SIDE = 1200;
+
+function dataUrlSizeBytes(dataUrl) {
+  const base64 = dataUrl.split(',')[1] || '';
+  return Math.ceil((base64.length * 3) / 4);
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function compressImageFile(file) {
+  const originalDataUrl = await readFileAsDataUrl(file);
+  const img = await loadImage(originalDataUrl);
+
+  const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(img.width, img.height));
+  const width = Math.max(1, Math.round(img.width * scale));
+  const height = Math.max(1, Math.round(img.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, width, height);
+
+  let quality = 0.85;
+  let output = canvas.toDataURL('image/jpeg', quality);
+  while (dataUrlSizeBytes(output) > TARGET_IMAGE_BYTES && quality > 0.45) {
+    quality -= 0.1;
+    output = canvas.toDataURL('image/jpeg', quality);
+  }
+
+  if (dataUrlSizeBytes(output) > MAX_IMAGE_BYTES) {
+    throw new Error('Image is too large even after compression');
+  }
+
+  return output;
+}
 
 export default function AdminProducts() {
   const [products, setProducts] = useState([]);
@@ -19,7 +72,8 @@ export default function AdminProducts() {
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(initialForm);
-  const [uploading, setUploading] = useState(false);
+  const [imageUrl, setImageUrl] = useState('');
+  const [processingImages, setProcessingImages] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => { fetchProducts(); }, []);
@@ -31,29 +85,58 @@ export default function AdminProducts() {
     setLoading(false);
   }
 
-  const openAdd = () => { setEditing(null); setForm(initialForm); setShowModal(true); };
+  const openAdd = () => {
+    setEditing(null);
+    setImageUrl('');
+    setForm(initialForm);
+    setShowModal(true);
+  };
   const openEdit = (product) => {
     setEditing(product.id);
+    setImageUrl('');
     setForm({ name: product.name, description: product.description, price: product.price, category: product.category, stock: product.stock, images: product.images || [] });
     setShowModal(true);
   };
 
-  const handleImageUpload = async (e) => {
-    const files = Array.from(e.target.files);
-    if (files.length === 0) return;
-    setUploading(true);
+  const handleAddImageUrl = () => {
+    const trimmed = imageUrl.trim();
+    if (!trimmed) return;
     try {
-      const urls = await Promise.all(files.map(async (file) => {
-        const storageRef = ref(storage, `products/${Date.now()}_${file.name}`);
-        await uploadBytes(storageRef, file);
-        return getDownloadURL(storageRef);
-      }));
-      setForm({ ...form, images: [...form.images, ...urls] });
-      toast.success(`${files.length} image(s) uploaded`);
+      // Basic URL validation before storing in Firestore.
+      new URL(trimmed);
     } catch {
-      toast.error('Image upload failed');
+      toast.error('Please enter a valid image URL');
+      return;
+    }
+    setForm((prev) => ({ ...prev, images: [...prev.images, trimmed] }));
+    setImageUrl('');
+  };
+
+  const handleImagePick = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    const invalid = files.find((file) => !file.type.startsWith('image/'));
+    if (invalid) {
+      toast.error('Only image files are allowed');
+      e.target.value = '';
+      return;
+    }
+
+    setProcessingImages(true);
+    try {
+      const compressed = [];
+      for (const file of files) {
+        const dataUrl = await compressImageFile(file);
+        compressed.push(dataUrl);
+      }
+      setForm((prev) => ({ ...prev, images: [...prev.images, ...compressed] }));
+      toast.success(`${compressed.length} image(s) added from your PC`);
+    } catch (error) {
+      toast.error(error.message || 'Failed to process selected image(s)');
     } finally {
-      setUploading(false);
+      setProcessingImages(false);
+      e.target.value = '';
     }
   };
 
@@ -199,11 +282,33 @@ export default function AdminProducts() {
               </div>
               <div>
                 <label className="text-sm font-medium block mb-1">Images</label>
-                <label className="flex items-center gap-2 btn-secondary cursor-pointer w-fit">
-                  {uploading ? <LoadingSpinner size="sm" /> : <Upload size={16} />}
-                  {uploading ? 'Uploading...' : 'Upload Images'}
-                  <input type="file" accept="image/*" multiple className="hidden" onChange={handleImageUpload} disabled={uploading} />
+                <label className="inline-flex items-center gap-2 btn-secondary cursor-pointer mb-2">
+                  {processingImages ? <LoadingSpinner size="sm" /> : <Upload size={16} />}
+                  {processingImages ? 'Processing...' : 'Add From PC'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={handleImagePick}
+                    disabled={processingImages}
+                  />
                 </label>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={imageUrl}
+                    onChange={(e) => setImageUrl(e.target.value)}
+                    className="input"
+                    placeholder="https://example.com/image.jpg"
+                  />
+                  <button type="button" onClick={handleAddImageUrl} className="btn-secondary whitespace-nowrap">
+                    Add URL
+                  </button>
+                </div>
+                <p className="text-xs text-surface-500 mt-1">
+                  You can add from your PC or paste a public URL. Local files are compressed before save.
+                </p>
                 {form.images.length > 0 && (
                   <div className="flex gap-2 mt-2 flex-wrap">
                     {form.images.map((url, i) => (

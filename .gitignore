@@ -4,3 +4,5 @@ node_modules/
 .firebase/
 dist/
 build/
+
+functions/.env

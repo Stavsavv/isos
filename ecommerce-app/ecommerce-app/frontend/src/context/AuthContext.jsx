@@ -9,7 +9,8 @@ import {
   updateProfile,
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db } from '../firebase/config';
+import { auth, db, firebaseInitError, missingVars } from '../firebase/config';
+import LoadingSpinner from '../components/LoadingSpinner.jsx';
 
 const AuthContext = createContext(null);
 
@@ -17,6 +18,7 @@ export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [configError, setConfigError] = useState('');
 
   async function register(name, email, password) {
     const { user: firebaseUser } = await createUserWithEmailAndPassword(auth, email, password);
@@ -62,16 +64,45 @@ export function AuthProvider({ children }) {
   }
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setUser(firebaseUser);
-      if (firebaseUser) {
-        await fetchUserProfile(firebaseUser.uid);
-      } else {
-        setUserProfile(null);
-      }
+    if (firebaseInitError || !auth || !db) {
+      const detail = missingVars.length > 0
+        ? `Missing env vars: ${missingVars.join(', ')}`
+        : 'Check your Firebase web config values in .env.';
+      setConfigError(`Firebase is not configured correctly. ${detail}`);
       setLoading(false);
-    });
-    return unsubscribe;
+      return () => {};
+    }
+
+    let active = true;
+    const timeoutId = setTimeout(() => {
+      if (active) setLoading(false);
+    }, 5000);
+
+    let unsubscribe = () => {};
+    try {
+      unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (!active) return;
+
+        setUser(firebaseUser);
+        if (firebaseUser) {
+          await fetchUserProfile(firebaseUser.uid);
+        } else {
+          setUserProfile(null);
+        }
+        setLoading(false);
+        clearTimeout(timeoutId);
+      });
+    } catch (error) {
+      console.error('Error initializing auth state listener:', error);
+      setLoading(false);
+      clearTimeout(timeoutId);
+    }
+
+    return () => {
+      active = false;
+      clearTimeout(timeoutId);
+      unsubscribe();
+    };
   }, []);
 
   const isAdmin = userProfile?.role === 'admin';
@@ -88,7 +119,27 @@ export function AuthProvider({ children }) {
     fetchUserProfile,
   };
 
-  return <AuthContext.Provider value={value}>{!loading && children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {loading ? (
+        <div className="min-h-screen flex items-center justify-center bg-surface-50 dark:bg-surface-950">
+          <LoadingSpinner size="lg" />
+        </div>
+      ) : configError ? (
+        <div className="min-h-screen flex items-center justify-center bg-surface-50 dark:bg-surface-950 p-6">
+          <div className="max-w-2xl w-full card p-6">
+            <h1 className="text-2xl font-display mb-3">Firebase Config Error</h1>
+            <p className="text-surface-700 dark:text-surface-300 mb-2">{configError}</p>
+            <p className="text-sm text-surface-600 dark:text-surface-400">
+              Create/update `frontend/.env` and restart the dev server.
+            </p>
+          </div>
+        </div>
+      ) : (
+        children
+      )}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {
