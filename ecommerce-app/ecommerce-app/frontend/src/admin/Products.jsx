@@ -7,8 +7,9 @@ import AdminLayout from '../components/AdminLayout.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, X, Star } from 'lucide-react';
+import { CATEGORY_OPTIONS } from '../constants/categories.js';
 
-const CATEGORIES = ['Electronics', 'Clothing', 'Books', 'Home & Garden', 'Sports', 'Beauty', 'Toys', 'Automotive'];
+const CATEGORIES = CATEGORY_OPTIONS.map((category) => category.name);
 
 const initialForm = { name: '', description: '', price: '', category: CATEGORIES[0], stock: '', images: [] };
 
@@ -69,16 +70,16 @@ export default function AdminProducts() {
         category: form.category,
         stock: parseInt(form.stock),
         images: form.images,
-        rating: editing ? undefined : 0,
-        reviewCount: editing ? undefined : 0,
         updatedAt: serverTimestamp(),
       };
-      if (!editing) data.createdAt = serverTimestamp();
 
       if (editing) {
         await updateDoc(doc(db, 'products', editing), data);
         toast.success('Product updated');
       } else {
+        data.rating = 0;
+        data.reviewCount = 0;
+        data.createdAt = serverTimestamp();
         await addDoc(collection(db, 'products'), data);
         toast.success('Product added');
       }

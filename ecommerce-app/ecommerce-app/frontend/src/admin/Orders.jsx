@@ -58,7 +58,7 @@ export default function AdminOrders() {
         <p className="text-surface-500 text-sm">{filtered.length} orders</p>
         <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="input w-auto text-sm">
           <option value="all">All Statuses</option>
-          {STATUSES.map((s) => <option key={s} value={s} className="capitalize">{s}</option>)}
+          {STATUSES.map((s) => <option key={s} value={s} className="capitalize bg-surface-50 text-surface-900 dark:bg-surface-900 dark:text-surface-50">{s}</option>)}
         </select>
       </div>
 
@@ -98,7 +98,7 @@ export default function AdminOrders() {
                         onChange={(e) => updateStatus(order.id, e.target.value)}
                         className={`text-xs font-medium px-2 py-1 rounded-full border-0 outline-none cursor-pointer ${STATUS_COLORS[order.orderStatus || 'processing']}`}
                       >
-                        {STATUSES.map((s) => <option key={s} value={s} className="bg-white dark:bg-surface-900 text-surface-900">{s}</option>)}
+                        {STATUSES.map((s) => <option key={s} value={s} className="bg-surface-50 text-surface-900 dark:bg-surface-900 dark:text-surface-50">{s}</option>)}
                       </select>
                     </td>
                     <td className="p-4 text-right font-medium">${order.totalPrice?.toFixed(2)}</td>

@@ -1,94 +1,112 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  collection, query, where, orderBy, limit, getDocs, startAfter,
+  collection, query, orderBy, getDocs,
 } from 'firebase/firestore';
 import { db } from '../firebase/config.js';
 import ProductCard from '../components/ProductCard.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
-import { SlidersHorizontal, X, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { SlidersHorizontal, Search } from 'lucide-react';
+import { CATEGORY_OPTIONS, CATEGORY_NAME_BY_SLUG, resolveCategorySlug } from '../constants/categories.js';
+import { useLanguage } from '../context/LanguageContext.jsx';
 
-const CATEGORIES = ['All', 'Electronics', 'Clothing', 'Books', 'Home & Garden', 'Sports', 'Beauty', 'Toys', 'Automotive'];
-const SORT_OPTIONS = [
-  { label: 'Newest', value: 'createdAt_desc' },
-  { label: 'Price: Low to High', value: 'price_asc' },
-  { label: 'Price: High to Low', value: 'price_desc' },
-  { label: 'Rating', value: 'rating_desc' },
-];
 const PAGE_SIZE = 12;
 
 export default function Products() {
+  const { t } = useLanguage();
   const [searchParams, setSearchParams] = useSearchParams();
   const [products, setProducts] = useState([]);
+  const [filteredProducts, setFilteredProducts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [lastDoc, setLastDoc] = useState(null);
   const [hasMore, setHasMore] = useState(false);
   const [page, setPage] = useState(1);
   const [showFilters, setShowFilters] = useState(false);
 
-  const category = searchParams.get('category') || 'All';
+  const CATEGORIES = [
+    { name: t('products.all'), slug: 'all' },
+    ...CATEGORY_OPTIONS.map((category) => ({
+      ...category,
+      name: t(`categories.${category.slug}`),
+    })),
+  ];
+  const SORT_OPTIONS = [
+    { label: t('products.sort.newest'), value: 'createdAt_desc' },
+    { label: t('products.sort.lowHigh'), value: 'price_asc' },
+    { label: t('products.sort.highLow'), value: 'price_desc' },
+    { label: t('products.sort.rating'), value: 'rating_desc' },
+  ];
+
+  const categorySlug = resolveCategorySlug(searchParams.get('category'));
+  const selectedCategoryName = categorySlug === 'all' ? null : CATEGORY_NAME_BY_SLUG[categorySlug];
+  const categoryName = categorySlug === 'all' ? t('products.allProducts') : t(`categories.${categorySlug}`);
   const sort = searchParams.get('sort') || 'createdAt_desc';
   const search = searchParams.get('search') || '';
 
   const updateParam = (key, val) => {
     const p = new URLSearchParams(searchParams);
-    if (val && val !== 'All') p.set(key, val);
+    if (val && val !== 'all') p.set(key, val);
     else p.delete(key);
     p.delete('page');
     setSearchParams(p);
     setPage(1);
   };
 
-  const fetchProducts = useCallback(async (reset = true) => {
+  const fetchProducts = useCallback(async () => {
     setLoading(true);
     try {
       const [sortField, sortDir] = sort.split('_');
-      let constraints = [orderBy(sortField, sortDir)];
-      if (category && category !== 'All') constraints.unshift(where('category', '==', category));
-      if (!reset && lastDoc) constraints.push(startAfter(lastDoc));
-      constraints.push(limit(PAGE_SIZE + 1));
-
-      const q = query(collection(db, 'products'), ...constraints);
+      const q = query(collection(db, 'products'), orderBy(sortField, sortDir));
       const snap = await getDocs(q);
-      const docs = snap.docs.slice(0, PAGE_SIZE).map((d) => ({ id: d.id, ...d.data() }));
+      const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
       let filtered = docs;
+      if (selectedCategoryName) {
+        filtered = filtered.filter((p) => p.category === selectedCategoryName);
+      }
       if (search) {
         const s = search.toLowerCase();
-        filtered = docs.filter((p) => p.name?.toLowerCase().includes(s) || p.description?.toLowerCase().includes(s));
+        filtered = filtered.filter((p) => p.name?.toLowerCase().includes(s) || p.description?.toLowerCase().includes(s));
       }
 
-      if (reset) {
-        setProducts(filtered);
-      } else {
-        setProducts((prev) => [...prev, ...filtered]);
-      }
-      setHasMore(snap.docs.length > PAGE_SIZE);
-      setLastDoc(snap.docs[PAGE_SIZE - 1] || null);
+      setFilteredProducts(filtered);
+      setPage(1);
+      setProducts(filtered.slice(0, PAGE_SIZE));
+      setHasMore(filtered.length > PAGE_SIZE);
     } catch (err) {
       console.error('Error fetching products:', err);
+      setFilteredProducts([]);
+      setProducts([]);
+      setHasMore(false);
     } finally {
       setLoading(false);
     }
-  }, [category, sort, search]);
+  }, [selectedCategoryName, sort, search]);
 
   useEffect(() => {
-    fetchProducts(true);
-  }, [category, sort, search]);
+    fetchProducts();
+  }, [fetchProducts]);
+
+  const handleLoadMore = () => {
+    const nextPage = page + 1;
+    const nextItems = filteredProducts.slice(0, nextPage * PAGE_SIZE);
+    setPage(nextPage);
+    setProducts(nextItems);
+    setHasMore(nextItems.length < filteredProducts.length);
+  };
 
   return (
     <div className="page-container py-8 animate-fade-in">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
         <div>
-          <h1 className="section-title">{category === 'All' ? 'All Products' : category}</h1>
-          {search && <p className="text-surface-500 mt-1">Search results for "<span className="text-primary-500">{search}</span>"</p>}
+          <h1 className="section-title">{categoryName}</h1>
+          {search && <p className="text-surface-500 mt-1">{t('products.searchResultsFor')} "<span className="text-primary-500">{search}</span>"</p>}
         </div>
         <div className="flex items-center gap-3">
           <button
             onClick={() => setShowFilters(!showFilters)}
             className="md:hidden btn-secondary flex items-center gap-2"
           >
-            <SlidersHorizontal size={16} /> Filters
+            <SlidersHorizontal size={16} /> {t('products.filters')}
           </button>
           <select
             value={sort}
@@ -105,25 +123,25 @@ export default function Products() {
         <aside className={`${showFilters ? 'block' : 'hidden'} md:block w-full md:w-52 flex-shrink-0`}>
           <div className="card p-5 sticky top-24">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-sm">Categories</h3>
-              {category !== 'All' && (
-                <button onClick={() => updateParam('category', 'All')} className="text-xs text-primary-500 hover:underline">
-                  Clear
+              <h3 className="font-semibold text-sm">{t('products.categories')}</h3>
+              {categorySlug !== 'all' && (
+                <button onClick={() => updateParam('category', 'all')} className="text-xs text-primary-500 hover:underline">
+                  {t('products.clear')}
                 </button>
               )}
             </div>
             <div className="space-y-1">
               {CATEGORIES.map((cat) => (
                 <button
-                  key={cat}
-                  onClick={() => updateParam('category', cat)}
+                  key={cat.slug}
+                  onClick={() => updateParam('category', cat.slug)}
                   className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                    category === cat
+                    categorySlug === cat.slug
                       ? 'bg-primary-500 text-white font-medium'
                       : 'hover:bg-surface-100 dark:hover:bg-surface-800'
                   }`}
                 >
-                  {cat}
+                  {cat.name}
                 </button>
               ))}
             </div>
@@ -137,14 +155,14 @@ export default function Products() {
           ) : products.length === 0 ? (
             <div className="card py-20 text-center">
               <Search size={48} className="text-surface-300 mx-auto mb-4" />
-              <h3 className="font-display text-xl font-semibold mb-2">No products found</h3>
-              <p className="text-surface-500">Try adjusting your search or filters</p>
-              {(search || category !== 'All') && (
+              <h3 className="font-display text-xl font-semibold mb-2">{t('products.noProductsFound')}</h3>
+              <p className="text-surface-500">{t('products.tryAdjusting')}</p>
+              {(search || categorySlug !== 'all') && (
                 <button
                   onClick={() => setSearchParams({})}
                   className="btn-primary mt-4"
                 >
-                  Clear all filters
+                  {t('products.clearAllFilters')}
                 </button>
               )}
             </div>
@@ -156,12 +174,12 @@ export default function Products() {
               {hasMore && (
                 <div className="flex justify-center mt-10">
                   <button
-                    onClick={() => { setPage(p => p + 1); fetchProducts(false); }}
+                    onClick={handleLoadMore}
                     disabled={loading}
                     className="btn-secondary flex items-center gap-2"
                   >
                     {loading ? <LoadingSpinner size="sm" /> : null}
-                    Load More Products
+                    {t('products.loadMore')}
                   </button>
                 </div>
               )}

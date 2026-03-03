@@ -1,7 +1,10 @@
 import { Link } from 'react-router-dom';
 import { Package, Twitter, Instagram, Facebook, Github } from 'lucide-react';
+import { useLanguage } from '../context/LanguageContext.jsx';
 
 export default function Footer() {
+  const { t } = useLanguage();
+
   return (
     <footer className="bg-surface-900 dark:bg-surface-950 text-surface-300 mt-auto">
       <div className="page-container py-12">
@@ -13,9 +16,7 @@ export default function Footer() {
               </div>
               <span className="font-display font-bold text-xl text-white">ShopNow</span>
             </Link>
-            <p className="text-sm leading-relaxed text-surface-400">
-              Discover amazing products at unbeatable prices. Quality guaranteed.
-            </p>
+            <p className="text-sm leading-relaxed text-surface-400">{t('footer.description')}</p>
             <div className="flex gap-3 mt-4">
               {[Twitter, Instagram, Facebook, Github].map((Icon, i) => (
                 <a key={i} href="#" className="p-2 rounded-lg bg-surface-800 hover:bg-primary-500 transition-colors">
@@ -26,9 +27,9 @@ export default function Footer() {
           </div>
 
           <div>
-            <h4 className="font-semibold text-white mb-4 text-sm uppercase tracking-wider">Shop</h4>
+            <h4 className="font-semibold text-white mb-4 text-sm uppercase tracking-wider">{t('footer.shop')}</h4>
             <ul className="space-y-2 text-sm">
-              {['All Products', 'New Arrivals', 'Best Sellers', 'Sale'].map((item) => (
+              {[t('footer.allProducts'), t('footer.newArrivals'), t('footer.bestSellers'), t('footer.sale')].map((item) => (
                 <li key={item}>
                   <Link to="/products" className="hover:text-primary-400 transition-colors">{item}</Link>
                 </li>
@@ -37,9 +38,9 @@ export default function Footer() {
           </div>
 
           <div>
-            <h4 className="font-semibold text-white mb-4 text-sm uppercase tracking-wider">Account</h4>
+            <h4 className="font-semibold text-white mb-4 text-sm uppercase tracking-wider">{t('footer.account')}</h4>
             <ul className="space-y-2 text-sm">
-              {[['Login', '/login'], ['Register', '/register'], ['My Profile', '/profile'], ['My Orders', '/profile']].map(([item, to]) => (
+              {[[t('nav.login'), '/login'], [t('footer.register'), '/register'], [t('nav.myProfile'), '/profile'], [t('footer.myOrders'), '/profile']].map(([item, to]) => (
                 <li key={item}>
                   <Link to={to} className="hover:text-primary-400 transition-colors">{item}</Link>
                 </li>
@@ -48,9 +49,9 @@ export default function Footer() {
           </div>
 
           <div>
-            <h4 className="font-semibold text-white mb-4 text-sm uppercase tracking-wider">Support</h4>
+            <h4 className="font-semibold text-white mb-4 text-sm uppercase tracking-wider">{t('footer.support')}</h4>
             <ul className="space-y-2 text-sm">
-              {['FAQ', 'Shipping Policy', 'Returns', 'Contact Us'].map((item) => (
+              {[t('footer.faq'), t('footer.shippingPolicy'), t('footer.returns'), t('footer.contactUs')].map((item) => (
                 <li key={item}>
                   <a href="#" className="hover:text-primary-400 transition-colors">{item}</a>
                 </li>
@@ -60,10 +61,10 @@ export default function Footer() {
         </div>
 
         <div className="border-t border-surface-800 mt-10 pt-6 flex flex-col md:flex-row justify-between items-center gap-4 text-sm text-surface-500">
-          <p>© {new Date().getFullYear()} ShopNow. All rights reserved.</p>
+          <p>&copy; {new Date().getFullYear()} ShopNow. {t('footer.rightsReserved')}</p>
           <div className="flex gap-4">
-            <a href="#" className="hover:text-surface-300 transition-colors">Privacy Policy</a>
-            <a href="#" className="hover:text-surface-300 transition-colors">Terms of Service</a>
+            <a href="#" className="hover:text-surface-300 transition-colors">{t('footer.privacyPolicy')}</a>
+            <a href="#" className="hover:text-surface-300 transition-colors">{t('footer.terms')}</a>
           </div>
         </div>
       </div>
