@@ -52,10 +52,16 @@ export default function Navbar() {
   const handleLogout = async () => {
     try {
       await logout();
-      toast.success(language === "el" ? "Αποσυνδέθηκες επιτυχώς" : "Logged out successfully");
+      toast.success(
+        language === "el"
+          ? "Αποσυνδέθηκες επιτυχώς"
+          : "Logged out successfully",
+      );
       navigate("/");
     } catch {
-      toast.error(language === "el" ? "Αποτυχία αποσύνδεσης" : "Failed to logout");
+      toast.error(
+        language === "el" ? "Αποτυχία αποσύνδεσης" : "Failed to logout",
+      );
     }
   };
 
@@ -101,7 +107,9 @@ export default function Navbar() {
             <button
               onClick={toggleLanguage}
               className="btn-ghost px-3 py-2 rounded-lg text-xs font-semibold"
-              title={language === "en" ? "Switch to Greek" : "Switch to English"}
+              title={
+                language === "en" ? "Switch to Greek" : "Switch to English"
+              }
             >
               {language === "en" ? "EN / GR" : "GR / EN"}
             </button>
@@ -147,7 +155,7 @@ export default function Navbar() {
                   <div className="w-7 h-7 bg-primary-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
                     {(userProfile?.name || user.email)?.[0]?.toUpperCase()}
                   </div>
-                    <span className="text-sm font-medium hidden lg:block max-w-24 truncate">
+                  <span className="text-sm font-medium hidden lg:block max-w-24 truncate">
                     {userProfile?.name || t("nav.account")}
                   </span>
                 </button>

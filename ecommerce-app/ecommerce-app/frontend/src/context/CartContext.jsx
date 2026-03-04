@@ -1,9 +1,11 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
-import { doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
+import { doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from './AuthContext';
 import {
   getAvailableStockForShotNumber,
+  normalizeShotNumberEntries,
+  SHOT_NUMBER_STATUS,
 } from '../constants/fysiggia.js';
 
 const CartContext = createContext(null);
@@ -34,6 +36,13 @@ function resolveItemStock(product, shotNumber) {
     product?.shotgunShells || { numbers: product?.numbers, shotNumber: product?.shotNumber },
     shotNumber,
   );
+}
+
+function hasVisibleShotNumbers(product) {
+  return normalizeShotNumberEntries(
+    product?.shotgunShells?.numbers || product?.numbers,
+    product?.shotgunShells?.shotNumber || product?.shotNumber,
+  ).some((entry) => entry.status !== SHOT_NUMBER_STATUS.HIDDEN);
 }
 
 export function CartProvider({ children }) {
@@ -78,6 +87,9 @@ export function CartProvider({ children }) {
 
   const addToCart = useCallback(async (product, quantity = 1, options = {}) => {
     const shotNumber = options?.shotNumber || null;
+    if (!shotNumber && hasVisibleShotNumbers(product)) {
+      throw new Error("Παρακαλώ επιλέξτε Νούμερο");
+    }
     const availableStock = resolveItemStock(product, shotNumber);
     if (shotNumber && availableStock <= 0) {
       throw new Error(`Διαθέσιμα μόνο 0 κουτιά για το Νούμερο ${shotNumber}`);

@@ -90,7 +90,9 @@ export default function Checkout() {
 
       const result = await response.json();
       const sessionId = result?.sessionId;
+      const orderId = result?.orderId;
       if (!sessionId) throw new Error('Missing Stripe session id');
+      if (orderId) localStorage.setItem('pendingOrderId', orderId);
 
       const stripe = await stripePromise;
       const { error } = await stripe.redirectToCheckout({ sessionId });

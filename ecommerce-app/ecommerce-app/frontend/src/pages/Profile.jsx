@@ -1,6 +1,15 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
+import {
+  collection,
+  query,
+  where,
+  orderBy,
+  getDocs,
+  doc,
+  runTransaction,
+  serverTimestamp,
+} from 'firebase/firestore';
 import { db } from '../firebase/config.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { useLanguage } from '../context/LanguageContext.jsx';
@@ -8,6 +17,10 @@ import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import { User, Package, ChevronRight, CheckCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
+import {
+  normalizeShotNumberEntries,
+  SHOT_NUMBER_STATUS,
+} from '../constants/fysiggia.js';
 
 const STATUS_COLORS = {
   processing: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-500/10 dark:text-yellow-400',
@@ -15,6 +28,83 @@ const STATUS_COLORS = {
   delivered: 'bg-green-100 text-green-700 dark:bg-green-500/10 dark:text-green-400',
   pending: 'bg-surface-100 text-surface-600 dark:bg-surface-800 dark:text-surface-300',
 };
+
+function getOrderItemProductId(item) {
+  return item?.id || item?.productId || item?.product_id || item?.product?.id || null;
+}
+
+function getOrderItemShotNumber(item) {
+  return item?.shotNumber || item?.number || item?.shot_number || item?.selectedShotNumber || null;
+}
+
+function buildReductionByProduct(orderItems) {
+  const reductionByProduct = new Map();
+  for (const item of orderItems || []) {
+    const productId = getOrderItemProductId(item);
+    if (!productId) continue;
+    const quantity = Number(item.quantity) || 0;
+    if (quantity <= 0) continue;
+    const key = String(productId);
+    if (!reductionByProduct.has(key)) {
+      reductionByProduct.set(key, { total: 0, byShotNumber: {} });
+    }
+    const reduction = reductionByProduct.get(key);
+    reduction.total += quantity;
+    const shotNumber = getOrderItemShotNumber(item);
+    if (shotNumber) {
+      const shotKey = String(shotNumber);
+      reduction.byShotNumber[shotKey] = (reduction.byShotNumber[shotKey] || 0) + quantity;
+    }
+  }
+  return reductionByProduct;
+}
+
+function reduceProductStock(productData, reduction) {
+  const byShotNumber = reduction.byShotNumber || {};
+  const hasShotNumberReduction = Object.keys(byShotNumber).length > 0;
+  const totalReduction = reduction.total || 0;
+
+  if (!hasShotNumberReduction) {
+    return {
+      stock: Math.max(0, (Number(productData?.stock) || 0) - totalReduction),
+      shotgunShells: productData?.shotgunShells ?? null,
+      numbers: productData?.numbers ?? null,
+    };
+  }
+
+  const normalizedNumbers = normalizeShotNumberEntries(
+    productData?.shotgunShells?.numbers || productData?.numbers,
+    productData?.shotgunShells?.shotNumber || productData?.shotNumber,
+  );
+
+  const nextNumbers = normalizedNumbers.map((entry) => {
+    const qty = Number(byShotNumber[entry.value]) || 0;
+    if (qty <= 0) return entry;
+    const nextStock = Math.max(0, (entry.stock || 0) - qty);
+    return {
+      ...entry,
+      status: nextStock > 0 ? SHOT_NUMBER_STATUS.AVAILABLE : SHOT_NUMBER_STATUS.UNAVAILABLE,
+      stock: nextStock > 0 ? nextStock : 0,
+    };
+  });
+
+  const totalStock = nextNumbers.reduce(
+    (sum, entry) => sum + (entry.status === SHOT_NUMBER_STATUS.AVAILABLE ? (entry.stock || 0) : 0),
+    0,
+  );
+
+  return {
+    stock: totalStock,
+    shotgunShells: {
+      ...(productData?.shotgunShells || {}),
+      numbers: nextNumbers,
+      shotNumber: nextNumbers
+        .filter((entry) => entry.status !== SHOT_NUMBER_STATUS.HIDDEN)
+        .map((entry) => entry.value),
+    },
+    numbers: nextNumbers,
+  };
+}
 
 export default function Profile() {
   const { user, userProfile } = useAuth();
@@ -29,6 +119,53 @@ export default function Profile() {
       toast.success(t('profile.orderPlaced'));
     }
   }, [searchParams, t]);
+
+  useEffect(() => {
+    async function applyPendingStockUpdate() {
+      if (!user?.uid) return;
+      if (searchParams.get('order') !== 'success') return;
+      const pendingOrderId = localStorage.getItem('pendingOrderId');
+      if (!pendingOrderId) return;
+
+      try {
+        await runTransaction(db, async (transaction) => {
+          const orderRef = doc(db, 'orders', pendingOrderId);
+          const orderSnap = await transaction.get(orderRef);
+          if (!orderSnap.exists()) return;
+
+          const orderData = orderSnap.data();
+          if (orderData?.userId !== user.uid) return;
+          if (orderData?.stockApplied === true) return;
+
+          const reductionByProduct = buildReductionByProduct(orderData.items || []);
+          for (const [productId, reduction] of reductionByProduct.entries()) {
+            const productRef = doc(db, 'products', productId);
+            const productSnap = await transaction.get(productRef);
+            if (!productSnap.exists()) continue;
+            const next = reduceProductStock(productSnap.data() || {}, reduction);
+            transaction.update(productRef, {
+              stock: next.stock,
+              shotgunShells: next.shotgunShells,
+              numbers: next.numbers,
+            });
+          }
+
+          transaction.update(orderRef, {
+            paymentStatus: 'paid',
+            stockApplied: true,
+            paidAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        });
+
+        localStorage.removeItem('pendingOrderId');
+      } catch (error) {
+        console.error('Stock update fallback failed:', error);
+      }
+    }
+
+    applyPendingStockUpdate();
+  }, [user, searchParams]);
 
   useEffect(() => {
     async function fetchOrders() {
@@ -149,7 +286,7 @@ export default function Profile() {
                       )}
                     </div>
                     <p className="text-sm text-surface-500">
-                      {order.items?.length} {t('profile.itemsCount')} � {order.createdAt?.toDate ? format(order.createdAt.toDate(), 'MMM d, yyyy') : '-'}
+                      {order.items?.length} {t('profile.itemsCount')} · {order.createdAt?.toDate ? format(order.createdAt.toDate(), 'MMM d, yyyy') : '-'}
                     </p>
                   </div>
                   <div className="text-right flex-shrink-0">
@@ -165,3 +302,4 @@ export default function Profile() {
     </div>
   );
 }
+

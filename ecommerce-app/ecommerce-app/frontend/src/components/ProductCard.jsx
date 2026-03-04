@@ -1,27 +1,49 @@
+﻿import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ShoppingCart, Heart, Star } from 'lucide-react';
 import { useCart } from '../context/CartContext.jsx';
 import { useWishlist } from '../context/WishlistContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
-import { normalizeShotNumberEntries } from '../constants/fysiggia.js';
+import { normalizeShotNumberEntries, SHOT_NUMBER_STATUS } from '../constants/fysiggia.js';
 import toast from 'react-hot-toast';
 
 export default function ProductCard({ product }) {
   const { addToCart } = useCart();
   const { toggle, isWishlisted } = useWishlist();
   const { user } = useAuth();
+  const [selectedShotNumber, setSelectedShotNumber] = useState('');
+
+  const shotNumberOptions = useMemo(
+    () => normalizeShotNumberEntries(
+      product.shotgunShells?.numbers || product.numbers,
+      product.shotgunShells?.shotNumber || product.shotNumber,
+    )
+      .filter((entry) => entry.status !== SHOT_NUMBER_STATUS.HIDDEN)
+      .sort((a, b) => Number(a.value) - Number(b.value)),
+    [product],
+  );
+  const hasShotNumbers = shotNumberOptions.length > 0;
+
+  const shortDescription = useMemo(() => {
+    const raw = String(product.description || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!raw) return '-';
+    return raw.length > 90 ? `${raw.slice(0, 90)}...` : raw;
+  }, [product.description]);
 
   const handleAddToCart = async (e) => {
     e.preventDefault();
     if (!user) { toast.error('Please login to add items to cart'); return; }
     if (product.stock === 0) { toast.error('Out of stock'); return; }
-    const hasShotNumbers = normalizeShotNumberEntries(
-      product.shotgunShells?.numbers || product.numbers,
-      product.shotgunShells?.shotNumber || product.shotNumber,
-    ).length > 0;
-    if (hasShotNumbers) { toast.error('Παρακαλώ επιλέξτε Νούμερο στη σελίδα προϊόντος'); return; }
-    await addToCart(product, 1);
-    toast.success('Added to cart!');
+    if (hasShotNumbers && !selectedShotNumber) { toast.error('Παρακαλώ επιλέξτε Νούμερο'); return; }
+    try {
+      await addToCart(product, 1, { shotNumber: hasShotNumbers ? selectedShotNumber : null });
+      toast.success('Added to cart!');
+    } catch (err) {
+      toast.error(err?.message || 'Failed to add to cart');
+    }
   };
 
   const handleWishlist = async (e) => {
@@ -36,7 +58,6 @@ export default function ProductCard({ product }) {
   return (
     <Link to={`/products/${product.id}`} className="group block">
       <div className="card overflow-hidden hover:shadow-lg transition-all duration-300 hover:-translate-y-1">
-        {/* Image */}
         <div className="relative aspect-square overflow-hidden bg-surface-100 dark:bg-surface-800">
           <img
             src={product.images?.[0] || 'https://via.placeholder.com/400x400?text=No+Image'}
@@ -56,14 +77,50 @@ export default function ProductCard({ product }) {
           </button>
         </div>
 
-        {/* Info */}
         <div className="p-4">
           <p className="text-xs text-primary-500 font-medium uppercase tracking-wide mb-1">{product.category}</p>
+          <p className="text-[11px] text-surface-500 font-semibold">Product Name</p>
           <h3 className="font-medium text-surface-900 dark:text-surface-50 line-clamp-2 mb-2 group-hover:text-primary-600 transition-colors">
             {product.name}
           </h3>
+          <p className="text-[11px] text-surface-500 font-semibold">Description</p>
+          <p className="text-xs text-surface-500 line-clamp-2 mb-2">{shortDescription}</p>
 
-          {/* Rating */}
+          {hasShotNumbers && (
+            <div className="mb-3">
+              <p className="text-[11px] text-surface-500 font-semibold mb-1">Νούμερα Φυσιγγίων</p>
+              <div className="flex flex-wrap gap-1.5">
+                {shotNumberOptions.map((entry) => {
+                  const available =
+                    entry.status === SHOT_NUMBER_STATUS.AVAILABLE && (entry.stock || 0) > 0;
+                  const selected = selectedShotNumber === entry.value;
+                  return (
+                    <button
+                      key={entry.value}
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (!available) return;
+                        setSelectedShotNumber(entry.value);
+                      }}
+                      disabled={!available}
+                      className={`min-w-8 h-8 px-2 rounded border text-xs font-semibold ${
+                        selected
+                          ? 'bg-black border-black text-white'
+                          : available
+                            ? 'bg-white border-black text-black'
+                            : 'bg-white border-red-500 text-red-600 cursor-not-allowed'
+                      }`}
+                    >
+                      {entry.value}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-1 mb-3">
             <div className="flex">
               {Array.from({ length: 5 }, (_, i) => (
@@ -77,7 +134,6 @@ export default function ProductCard({ product }) {
             <span className="text-xs text-surface-400">({product.reviewCount || 0})</span>
           </div>
 
-          {/* Price + Cart */}
           <div className="flex items-center justify-between">
             <span className="text-lg font-bold text-surface-900 dark:text-white">
               ${product.price?.toFixed(2)}

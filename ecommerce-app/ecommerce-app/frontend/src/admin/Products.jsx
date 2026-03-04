@@ -1,11 +1,10 @@
-﻿import { useState, useEffect, useRef, lazy, Suspense } from "react";
+﻿import { useState, useEffect, lazy, Suspense } from "react";
 import {
   collection,
   getDocs,
   addDoc,
   updateDoc,
   deleteDoc,
-  writeBatch,
   doc,
   serverTimestamp,
   orderBy,
@@ -22,6 +21,7 @@ import {
   FYSIGGIA_SUBCATEGORY_LABEL,
   FYSIGGIA_SUBCATEGORY_VALUE,
   HUNTING_CATEGORY_NAME,
+  SHOT_NUMBER_STATUS,
   normalizeShotNumberEntries,
   initialFysiggiaMeta,
 } from "../constants/fysiggia.js";
@@ -46,142 +46,19 @@ const getInitialForm = () => ({
   images: [],
   shotgunShells: { ...initialFysiggiaMeta, game: [], shotNumber: [], numbers: [] },
 });
+const DEFAULT_SHOT_NUMBER_STOCK = 0;
 
-const DIACRITICS_RE = /[\u0300-\u036f]/g;
-const SHOT_NUMBER_VALUES = new Set(FYSIGGIA_META_OPTIONS.shotNumber);
-const GREEK_VOLA = "\u03b2\u03bf\u03bb\u03b1";
-const GREEK_GOMOSI = "\u03b3\u03bf\u03bc\u03c9\u03c3\u03b7";
-const GREEK_NO = "\u03bd\u03bf";
-const GREEK_NUMERO = "\u03bd\u03bf\u03c5\u03bc\u03b5\u03c1\u03bf";
-const SHOT_SIZE_BY_NUMBER = Object.fromEntries(
-  FYSIGGIA_META_OPTIONS.shotSize.map((value) => [value.replace(GREEK_VOLA, ""), value]),
-);
-const GAME_SYNONYMS = {
-  "\u03b1\u03b3\u03c1\u03b9\u03bf\u03b3\u03bf\u03c5\u03c1\u03bf\u03c5\u03bd\u03bf":
-    "\u0391\u03b3\u03c1\u03b9\u03bf\u03b3\u03bf\u03cd\u03c1\u03bf\u03c5\u03bd\u03bf",
-  "\u03c4\u03c3\u03b9\u03c7\u03bb\u03b1": "\u03a4\u03c3\u03af\u03c7\u03bb\u03b1",
-  "\u03bb\u03b1\u03b3\u03bf\u03c2": "\u039b\u03b1\u03b3\u03cc\u03c2",
-  "\u03c6\u03b1\u03c3\u03c3\u03b1": "\u03a6\u03ac\u03c3\u03c3\u03b1",
-  "\u03bc\u03c0\u03b5\u03ba\u03b1\u03c4\u03c3\u03b1": "\u039c\u03c0\u03b5\u03ba\u03ac\u03c4\u03c3\u03b1",
-  "\u03c0\u03b1\u03c0\u03b9\u03b1": "\u03a0\u03ac\u03c0\u03b9\u03b1",
-  "\u03c5\u03b4\u03c1\u03bf\u03b2\u03b9\u03b1": "\u03a0\u03ac\u03c0\u03b9\u03b1",
-  "\u03c0\u03b5\u03c1\u03b4\u03b9\u03ba\u03b1": "\u03a0\u03ad\u03c1\u03b4\u03b9\u03ba\u03b1",
-  "\u03c6\u03b1\u03c3\u03b9\u03b1\u03bd\u03bf\u03c2": "\u03a6\u03b1\u03c3\u03b9\u03b1\u03bd\u03cc\u03c2",
-};
-
-function normalizeForMatch(value = "") {
-  return value.toLowerCase().normalize("NFD").replace(DIACRITICS_RE, "");
-}
-
-function stripHtml(value = "") {
-  return value
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function firstMatchFromOptions(normalizedText, options) {
-  return (
-    options.find((option) => normalizedText.includes(normalizeForMatch(option))) ||
-    ""
-  );
-}
-
-function parseFysiggiaMetaFromDescription(rawDescription = "") {
-  const plainText = stripHtml(rawDescription);
-  const normalizedText = normalizeForMatch(plainText);
-  if (!normalizedText) return { parsed: null, signature: "" };
-
-  const parsed = { ...initialFysiggiaMeta, game: [] };
-
-  parsed.manufacturer = firstMatchFromOptions(
-    normalizedText,
-    FYSIGGIA_META_OPTIONS.manufacturer,
-  );
-  parsed.type = firstMatchFromOptions(normalizedText, FYSIGGIA_META_OPTIONS.type);
-
-  const foundGames = new Set();
-  Object.entries(GAME_SYNONYMS).forEach(([needle, mapped]) => {
-    if (normalizedText.includes(needle)) foundGames.add(mapped);
+function mergeShotNumberEntries(existing = [], incoming = []) {
+  const merged = new Map();
+  existing.forEach((entry) => {
+    merged.set(entry.value, entry);
   });
-  parsed.game = FYSIGGIA_META_OPTIONS.game.filter((value) =>
-    foundGames.has(value),
-  );
-
-  if (/\b9\s*mm\b/i.test(normalizedText) || /\bcal\s*9\s*mm\b/i.test(normalizedText)) {
-    parsed.caliber = "Cal 9mm";
-  } else {
-    const caliberByGauge = {
-      "12": "Cal 12",
-      "16": "Cal 16",
-      "20": "Cal 20",
-      "28": "Cal 28",
-      "36": "Cal 36",
-    };
-    Object.entries(caliberByGauge).some(([gauge, caliber]) => {
-      if (
-        new RegExp(`\\b${gauge}\\s*\\/\\s*\\d{2}\\b`).test(normalizedText) ||
-        new RegExp(`\\bcal\\s*${gauge}\\b`).test(normalizedText)
-      ) {
-        parsed.caliber = caliber;
-        return true;
-      }
-      return false;
-    });
-  }
-
-  const powderMatch =
-    normalizedText.match(
-      new RegExp(`${GREEK_GOMOSI}\\s*[:\\-]?\\s*(\\d+(?:[.,]\\d+)?)\\s*gr\\b`),
-    ) ||
-    normalizedText.match(
-      new RegExp(`(\\d+(?:[.,]\\d+)?)\\s*gr\\b.{0,20}${GREEK_GOMOSI}`),
-    );
-  if (powderMatch?.[1]) {
-    parsed.powderWeightGr = powderMatch[1].replace(",", ".");
-  }
-
-  parsed.specialLoad =
-    ["Super Magnum", "Semi Magnum", "Magnum"].find((value) =>
-      normalizedText.includes(normalizeForMatch(value)),
-    ) || "";
-
-  const shotSizeMatch = normalizedText.match(
-    new RegExp(`\\b(8|9|10|12|15|27)\\s*${GREEK_VOLA}\\b`),
-  );
-  if (shotSizeMatch?.[1] && SHOT_SIZE_BY_NUMBER[shotSizeMatch[1]]) {
-    parsed.shotSize = SHOT_SIZE_BY_NUMBER[shotSizeMatch[1]];
-  } else {
-    const shotSizeFromNo = normalizedText.match(
-      new RegExp(
-        `\\b(?:${GREEK_NO}|no|n${GREEK_NO[1]}|numero|${GREEK_NUMERO})\\s*[:.]?\\s*(8|9|10|12|15|27)\\b`,
-      ),
-    );
-    if (shotSizeFromNo?.[1] && SHOT_SIZE_BY_NUMBER[shotSizeFromNo[1]]) {
-      parsed.shotSize = SHOT_SIZE_BY_NUMBER[shotSizeFromNo[1]];
-    }
-  }
-
-  const shotNumberMatches = Array.from(
-    normalizedText.matchAll(
-      new RegExp(
-        `\\b(?:${GREEK_NO}|no|n${GREEK_NO[1]}|numero|${GREEK_NUMERO})\\s*[:.]?\\s*(1|2|3|4|5|6|7(?:[.,]5)?|8(?:[.,]5)?|9(?:[.,]5)?|10|11)\\b`,
-        "g",
-      ),
-    ),
-  )
-    .map((match) => match[1]?.replace(",", "."))
-    .filter((value) => value && SHOT_NUMBER_VALUES.has(value));
-  parsed.shotNumber = [...new Set(shotNumberMatches)];
-
-  return { parsed, signature: normalizedText };
-}
-
-function arrayEquals(a = [], b = []) {
-  if (a.length !== b.length) return false;
-  return a.every((value, index) => value === b[index]);
+  incoming.forEach((entry) => {
+    merged.set(entry.value, entry);
+  });
+  return FYSIGGIA_META_OPTIONS.shotNumber
+    .map((value) => merged.get(value))
+    .filter(Boolean);
 }
 
 export default function AdminProducts() {
@@ -192,11 +69,7 @@ export default function AdminProducts() {
   const [form, setForm] = useState(getInitialForm);
   const [imageUrl, setImageUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [bulkAutofilling, setBulkAutofilling] = useState(false);
-  const [autofillRan, setAutofillRan] = useState(false);
-  const autofillTimerRef = useRef(null);
-  const lastAutofillSignatureRef = useRef("");
-
+        
   useEffect(() => {
     fetchProducts();
   }, []);
@@ -214,8 +87,6 @@ export default function AdminProducts() {
     setEditing(null);
     setImageUrl("");
     setForm(getInitialForm());
-    setAutofillRan(false);
-    lastAutofillSignatureRef.current = "";
     setShowModal(true);
   };
   const openEdit = (product) => {
@@ -239,8 +110,6 @@ export default function AdminProducts() {
         ),
       },
     });
-    setAutofillRan(false);
-    lastAutofillSignatureRef.current = "";
     setShowModal(true);
   };
 
@@ -263,6 +132,14 @@ export default function AdminProducts() {
     updateFysiggiaField(key, next);
   };
 
+  const normalizedShotNumbers = normalizeShotNumberEntries(
+    form.shotgunShells?.numbers,
+    form.shotgunShells?.shotNumber,
+  );
+  const totalShotNumberStock = normalizedShotNumbers.reduce((sum, entry) => (
+    entry.status === SHOT_NUMBER_STATUS.AVAILABLE ? sum + (entry.stock || 0) : sum
+  ), 0);
+
   const cycleShotNumberState = (value) => {
     setForm((prev) => {
       const current = normalizeShotNumberEntries(
@@ -273,13 +150,28 @@ export default function AdminProducts() {
       let next;
 
       if (index === -1) {
-        next = [...current, { value, available: true }];
-      } else if (current[index].available) {
+        next = [
+          ...current,
+          { value, status: SHOT_NUMBER_STATUS.AVAILABLE, stock: DEFAULT_SHOT_NUMBER_STOCK },
+        ];
+      } else if (current[index].status === SHOT_NUMBER_STATUS.AVAILABLE) {
         next = current.map((entry, entryIndex) =>
-          entryIndex === index ? { ...entry, available: false } : entry,
+          entryIndex === index
+            ? { ...entry, status: SHOT_NUMBER_STATUS.UNAVAILABLE, stock: 0 }
+            : entry,
+        );
+      } else if (current[index].status === SHOT_NUMBER_STATUS.UNAVAILABLE) {
+        next = current.map((entry, entryIndex) =>
+          entryIndex === index
+            ? { ...entry, status: SHOT_NUMBER_STATUS.HIDDEN, stock: 0 }
+            : entry,
         );
       } else {
-        next = current.filter((entry) => entry.value !== value);
+        next = current.map((entry, entryIndex) =>
+          entryIndex === index
+            ? { ...entry, status: SHOT_NUMBER_STATUS.AVAILABLE, stock: DEFAULT_SHOT_NUMBER_STOCK }
+            : entry,
+        );
       }
 
       return {
@@ -287,54 +179,48 @@ export default function AdminProducts() {
         shotgunShells: {
           ...prev.shotgunShells,
           numbers: next,
-          shotNumber: next.map((entry) => entry.value),
+          shotNumber: next
+            .filter((entry) => entry.status !== SHOT_NUMBER_STATUS.HIDDEN)
+            .map((entry) => entry.value),
         },
       };
     });
   };
 
-  useEffect(() => {
-    return () => {
-      if (autofillTimerRef.current) clearTimeout(autofillTimerRef.current);
-    };
-  }, []);
+  const updateShotNumberStock = (value, stockInput) => {
+    const parsed = Number(stockInput);
+    const stock = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+    const status = stock > 0 ? SHOT_NUMBER_STATUS.AVAILABLE : SHOT_NUMBER_STATUS.UNAVAILABLE;
 
-  const runDescriptionAutofill = (description, force = false) => {
-    if (!isFysiggiaForm) return;
-    const { parsed, signature } = parseFysiggiaMetaFromDescription(description);
-    if (!parsed || !signature) return;
-    if (!force && signature === lastAutofillSignatureRef.current) return;
+    setForm((prev) => {
+      const current = normalizeShotNumberEntries(
+        prev.shotgunShells?.numbers,
+        prev.shotgunShells?.shotNumber,
+      );
+      const index = current.findIndex((entry) => entry.value === value);
+      const next = index === -1
+        ? [
+          ...current,
+          { value, status, stock },
+        ]
+        : current.map((entry, entryIndex) =>
+          entryIndex === index
+            ? { ...entry, status, stock }
+            : entry,
+        );
 
-    setForm((prev) => ({
-      ...prev,
-      shotgunShells: {
-        ...prev.shotgunShells,
-        manufacturer: parsed.manufacturer || "",
-        type: parsed.type || "",
-        game: parsed.game || [],
-        caliber: parsed.caliber || "",
-        powderWeightGr: parsed.powderWeightGr || "",
-        specialLoad: parsed.specialLoad || "",
-        shotSize: parsed.shotSize || "",
-        shotNumber: parsed.shotNumber || [],
-        numbers: (parsed.shotNumber || []).map((value) => ({
-          value,
-          available: true,
-        })),
-      },
-    }));
-    lastAutofillSignatureRef.current = signature;
-    setAutofillRan(true);
+      return {
+        ...prev,
+        shotgunShells: {
+          ...prev.shotgunShells,
+          numbers: next,
+          shotNumber: next
+            .filter((entry) => entry.status !== SHOT_NUMBER_STATUS.HIDDEN)
+            .map((entry) => entry.value),
+        },
+      };
+    });
   };
-
-  useEffect(() => {
-    if (!showModal || !isFysiggiaForm || !form.description) return;
-    if (autofillTimerRef.current) clearTimeout(autofillTimerRef.current);
-    autofillTimerRef.current = setTimeout(() => {
-      runDescriptionAutofill(form.description, false);
-    }, 250);
-  }, [showModal, isFysiggiaForm, form.description]);
-
   const handleAddImageUrl = () => {
     const trimmed = imageUrl.trim();
     if (!trimmed) return;
@@ -351,32 +237,49 @@ export default function AdminProducts() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.name || !form.price || !form.stock) {
+    if (
+      !form.name ||
+      !form.price ||
+      (!isFysiggiaForm && (form.stock === "" || form.stock === null || form.stock === undefined))
+    ) {
       toast.error("Please fill all required fields");
       return;
     }
     setSubmitting(true);
     try {
+      const existingProduct = editing
+        ? products.find((product) => product.id === editing)
+        : null;
+      const existingNumbers = normalizeShotNumberEntries(
+        existingProduct?.shotgunShells?.numbers || existingProduct?.numbers,
+        existingProduct?.shotgunShells?.shotNumber || existingProduct?.shotNumber,
+      );
+      const normalizedNumbersInput = normalizeShotNumberEntries(
+        form.shotgunShells?.numbers,
+        form.shotgunShells?.shotNumber,
+      );
+      const normalizedNumbers = mergeShotNumberEntries(existingNumbers, normalizedNumbersInput);
+      const computedStock = normalizedNumbers.reduce((sum, entry) => (
+        entry.status === SHOT_NUMBER_STATUS.AVAILABLE ? sum + (entry.stock || 0) : sum
+      ), 0);
       const data = {
         name: form.name,
         description: form.description,
         price: parseFloat(form.price),
         category: form.category,
         subcategory: form.subcategory || "",
-        stock: parseInt(form.stock),
+        stock: isFysiggiaForm ? computedStock : parseInt(form.stock, 10),
         images: form.images,
         updatedAt: serverTimestamp(),
       };
 
       if (isFysiggiaForm) {
-        const normalizedNumbers = normalizeShotNumberEntries(
-          form.shotgunShells?.numbers,
-          form.shotgunShells?.shotNumber,
-        );
         data.shotgunShells = {
           ...form.shotgunShells,
           numbers: normalizedNumbers,
-          shotNumber: normalizedNumbers.map((entry) => entry.value),
+          shotNumber: normalizedNumbers
+            .filter((entry) => entry.status !== SHOT_NUMBER_STATUS.HIDDEN)
+            .map((entry) => entry.value),
           powderWeightGr:
             form.shotgunShells.powderWeightGr === ""
               ? null
@@ -389,7 +292,24 @@ export default function AdminProducts() {
       }
 
       if (editing) {
-        await updateDoc(doc(db, "products", editing), data);
+        const changedFields = { updatedAt: serverTimestamp() };
+        const previous = existingProduct || {};
+        if (previous.name !== data.name) changedFields.name = data.name;
+        if (previous.description !== data.description) changedFields.description = data.description;
+        if (Number(previous.price) !== Number(data.price)) changedFields.price = data.price;
+        if (previous.category !== data.category) changedFields.category = data.category;
+        if ((previous.subcategory || "") !== (data.subcategory || "")) changedFields.subcategory = data.subcategory;
+        if (Number(previous.stock) !== Number(data.stock)) changedFields.stock = data.stock;
+        if (JSON.stringify(previous.images || []) !== JSON.stringify(data.images || [])) {
+          changedFields.images = data.images;
+        }
+        if (JSON.stringify(previous.shotgunShells || null) !== JSON.stringify(data.shotgunShells || null)) {
+          changedFields.shotgunShells = data.shotgunShells;
+        }
+        if (JSON.stringify(previous.numbers || null) !== JSON.stringify(data.numbers || null)) {
+          changedFields.numbers = normalizedNumbers;
+        }
+        await updateDoc(doc(db, "products", editing), changedFields);
         toast.success("Product updated");
       } else {
         data.rating = 0;
@@ -418,116 +338,6 @@ export default function AdminProducts() {
     }
   };
 
-  const handleBulkAutofillAll = async () => {
-    if (
-      !confirm(
-        "Autofill metadata for all products in ÎšÎ¥ÎÎ—Î“Î•Î¤Î™ÎšÎ‘ Î•Î™Î”Î— > Î¦Ï…ÏƒÎ¯Î³Î³Î¹Î±?",
-      )
-    ) {
-      return;
-    }
-
-    setBulkAutofilling(true);
-    try {
-      const candidates = products.filter(
-        (product) =>
-          product.category === HUNTING_CATEGORY_NAME &&
-          product.subcategory === FYSIGGIA_SUBCATEGORY_VALUE,
-      );
-
-      const updates = [];
-      candidates.forEach((product) => {
-        const { parsed, signature } = parseFysiggiaMetaFromDescription(
-          product.description || "",
-        );
-        if (!parsed || !signature) return;
-
-        const currentMeta = {
-          ...initialFysiggiaMeta,
-          ...(product.shotgunShells || {}),
-          game: product.shotgunShells?.game || [],
-          numbers: normalizeShotNumberEntries(
-            product.shotgunShells?.numbers,
-            product.shotgunShells?.shotNumber,
-          ),
-          shotNumber: normalizeShotNumberEntries(
-            product.shotgunShells?.numbers,
-            product.shotgunShells?.shotNumber,
-          ).map((entry) => entry.value),
-        };
-
-        const nextMeta = {
-          ...currentMeta,
-          manufacturer: parsed.manufacturer || "",
-          type: parsed.type || "",
-          game: parsed.game || [],
-          caliber: parsed.caliber || "",
-          powderWeightGr: parsed.powderWeightGr || "",
-          specialLoad: parsed.specialLoad || "",
-          shotSize: parsed.shotSize || "",
-          shotNumber: parsed.shotNumber || [],
-          numbers: (parsed.shotNumber || []).map((value) => ({
-            value,
-            available: true,
-          })),
-        };
-
-        const changed =
-          currentMeta.manufacturer !== nextMeta.manufacturer ||
-          currentMeta.type !== nextMeta.type ||
-          !arrayEquals(currentMeta.game, nextMeta.game) ||
-          currentMeta.caliber !== nextMeta.caliber ||
-          String(currentMeta.powderWeightGr || "") !==
-            String(nextMeta.powderWeightGr || "") ||
-          currentMeta.specialLoad !== nextMeta.specialLoad ||
-          currentMeta.shotSize !== nextMeta.shotSize ||
-          !arrayEquals(currentMeta.shotNumber, nextMeta.shotNumber) ||
-          JSON.stringify(currentMeta.numbers) !== JSON.stringify(nextMeta.numbers);
-
-        if (changed) {
-          updates.push({ id: product.id, shotgunShells: nextMeta });
-        }
-      });
-
-      if (!updates.length) {
-        toast("No products needed metadata updates");
-        return;
-      }
-
-      let batch = writeBatch(db);
-      let ops = 0;
-      for (let i = 0; i < updates.length; i++) {
-        const update = updates[i];
-        batch.update(doc(db, "products", update.id), {
-          shotgunShells: update.shotgunShells,
-          updatedAt: serverTimestamp(),
-        });
-        ops++;
-        if (ops === 400) {
-          await batch.commit();
-          batch = writeBatch(db);
-          ops = 0;
-        }
-      }
-      if (ops > 0) await batch.commit();
-
-      setProducts((prev) =>
-        prev.map((product) => {
-          const changed = updates.find((u) => u.id === product.id);
-          return changed
-            ? { ...product, shotgunShells: changed.shotgunShells }
-            : product;
-        }),
-      );
-
-      toast.success(`Autofilled metadata for ${updates.length} product(s)`);
-    } catch {
-      toast.error("Bulk autofill failed");
-    } finally {
-      setBulkAutofilling(false);
-    }
-  };
-
   return (
     <AdminLayout title="Product Management">
       <div className="flex justify-between items-center mb-6">
@@ -535,14 +345,7 @@ export default function AdminProducts() {
           {products.length} products total
         </p>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleBulkAutofillAll}
-            disabled={bulkAutofilling}
-            className="btn-secondary text-sm"
-          >
-            {bulkAutofilling ? "Autofilling..." : "Autofill All Î¦Ï…ÏƒÎ¯Î³Î³Î¹Î±"}
-          </button>
-          <button
+                    <button
             onClick={openAdd}
             className="btn-primary flex items-center gap-2"
           >
@@ -704,14 +507,7 @@ export default function AdminProducts() {
                       value={form.description}
                       onChange={(value) => {
                         setForm({ ...form, description: value });
-                        if (autofillTimerRef.current) {
-                          clearTimeout(autofillTimerRef.current);
-                        }
-                        autofillTimerRef.current = setTimeout(() => {
-                          runDescriptionAutofill(value, false);
-                        }, 400);
                       }}
-                      onBlur={() => runDescriptionAutofill(form.description, false)}
                       className="bg-white"
                       placeholder="Product description"
                       modules={{
@@ -742,16 +538,28 @@ export default function AdminProducts() {
                   />
                 </div>
                 <div>
-                  <label className="text-sm font-medium block mb-1">Stock *</label>
+                  <label className="text-sm font-medium block mb-1">
+                    {isFysiggiaForm ? "Total Stock (auto)" : "Stock *"}
+                  </label>
                   <input
-                    required
+                    required={!isFysiggiaForm}
                     type="number"
                     min="0"
-                    value={form.stock}
-                    onChange={(e) => setForm({ ...form, stock: e.target.value })}
+                    readOnly={isFysiggiaForm}
+                    value={isFysiggiaForm ? String(totalShotNumberStock) : form.stock}
+                    onChange={(e) => {
+                      if (!isFysiggiaForm) {
+                        setForm({ ...form, stock: e.target.value });
+                      }
+                    }}
                     className="input"
                     placeholder="0"
                   />
+                  {isFysiggiaForm && (
+                    <p className="text-xs text-surface-500 mt-1">
+                      Calculated as the sum of available stock by number.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -889,31 +697,44 @@ export default function AdminProducts() {
                     <div>
                       <label className="text-sm font-medium block mb-1">{"\u039D\u03BF\u03CD\u03BC\u03B5\u03C1\u03B1 \u03A6\u03C5\u03C3\u03B9\u03B3\u03B3\u03AF\u03C9\u03BD"}</label>
                       <p className="text-xs text-surface-500 mb-2">Click: available / unavailable / hidden</p>
-                      <div className="grid grid-cols-4 gap-2 text-sm">
+                      <div className="space-y-2 text-sm">
                         {FYSIGGIA_META_OPTIONS.shotNumber.map((value) => {
-                          const entry = normalizeShotNumberEntries(
-                            form.shotgunShells?.numbers,
-                            form.shotgunShells?.shotNumber,
-                          ).find((item) => item.value === value);
-                          const isAvailable = entry?.available === true;
-                          const isUnavailable = entry?.available === false;
-                          const isHidden = !entry;
-                          const stateClass = isAvailable
+                          const entry = normalizedShotNumbers.find((item) => item.value === value);
+                          const status = entry?.status || SHOT_NUMBER_STATUS.HIDDEN;
+                          const stateClass = status === SHOT_NUMBER_STATUS.AVAILABLE
                             ? "bg-black text-white border-black"
-                            : isUnavailable
+                            : status === SHOT_NUMBER_STATUS.UNAVAILABLE
                               ? "bg-white text-red-600 border-red-500"
                               : "bg-surface-100 text-surface-500 border-surface-300";
 
                           return (
-                            <button
-                              key={value}
-                              type="button"
-                              onClick={() => cycleShotNumberState(value)}
-                              className={`rounded-md border px-2 py-1.5 font-medium transition-colors ${stateClass}`}
-                            >
-                              {value}
-                              {isHidden ? " -" : isAvailable ? " +" : " x"}
-                            </button>
+                            <div key={value} className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => cycleShotNumberState(value)}
+                                className={`min-w-12 rounded-md border px-2 py-1.5 font-medium transition-colors ${stateClass}`}
+                              >
+                                {value}
+                              </button>
+                              {status === SHOT_NUMBER_STATUS.AVAILABLE && (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-surface-500">qty:</span>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    value={entry?.stock || 0}
+                                    onChange={(e) => updateShotNumberStock(value, e.target.value)}
+                                    className="input !py-1 !px-2 w-20 text-sm"
+                                  />
+                                </div>
+                              )}
+                              {status === SHOT_NUMBER_STATUS.UNAVAILABLE && (
+                                <span className="text-xs text-red-600 font-medium">unavailable</span>
+                              )}
+                              {status === SHOT_NUMBER_STATUS.HIDDEN && (
+                                <span className="text-xs text-surface-500">hidden</span>
+                              )}
+                            </div>
                           );
                         })}
                       </div>
@@ -1003,6 +824,7 @@ export default function AdminProducts() {
     </AdminLayout>
   );
 }
+
 
 
 

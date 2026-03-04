@@ -64,7 +64,9 @@ export default function Cart() {
                 </Link>
                 <p className="text-primary-500 font-bold mt-1">${item.price.toFixed(2)}</p>
                 {item.shotNumber && (
-                  <p className="text-xs text-surface-500 mt-1">Νούμερο: {item.shotNumber}</p>
+                  <p className="text-xs text-surface-500 mt-1">
+                    Νούμερο: {item.shotNumber} | Ποσότητα: {item.quantity} κουτί | Απόθεμα: {item.stock}
+                  </p>
                 )}
                 <div className="flex items-center justify-between mt-3">
                   <div className="flex items-center gap-2">

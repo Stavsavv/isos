@@ -19,7 +19,9 @@ export function WishlistProvider({ children }) {
         else setItems([]);
       },
       (error) => {
-        console.error('Wishlist listener error:', error);
+        if (error?.code !== 'permission-denied') {
+          console.error('Wishlist listener error:', error);
+        }
         setItems([]);
       }
     );
@@ -37,7 +39,14 @@ export function WishlistProvider({ children }) {
       ? items.filter((i) => i.id !== product.id)
       : [...items, { id: product.id, name: product.name, price: product.price, image: product.images?.[0] || '' }];
     setItems(newItems);
-    await save(newItems);
+    try {
+      await save(newItems);
+    } catch (error) {
+      if (error?.code !== 'permission-denied') {
+        console.error('Wishlist save error:', error);
+      }
+      setItems(items);
+    }
   }, [items, save]);
 
   const isWishlisted = useCallback((id) => items.some((i) => i.id === id), [items]);

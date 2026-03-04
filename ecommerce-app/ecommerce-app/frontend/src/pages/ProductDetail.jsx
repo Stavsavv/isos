@@ -15,7 +15,10 @@ import { useCart } from "../context/CartContext.jsx";
 import { useWishlist } from "../context/WishlistContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import LoadingSpinner from "../components/LoadingSpinner.jsx";
-import { normalizeShotNumberEntries } from "../constants/fysiggia.js";
+import {
+  SHOT_NUMBER_STATUS,
+  normalizeShotNumberEntries,
+} from "../constants/fysiggia.js";
 import toast from "react-hot-toast";
 import {
   Star,
@@ -24,7 +27,6 @@ import {
   Minus,
   Plus,
   ArrowLeft,
-  Package,
 } from "lucide-react";
 
 export default function ProductDetail() {
@@ -79,6 +81,26 @@ export default function ProductDetail() {
     fetchData();
   }, [id, navigate]);
 
+  useEffect(() => {
+    if (!product) return;
+    const options = normalizeShotNumberEntries(
+      product.shotgunShells?.numbers || product.numbers,
+      product.shotgunShells?.shotNumber || product.shotNumber,
+    ).filter((entry) => entry.status !== SHOT_NUMBER_STATUS.HIDDEN);
+    if (!options.length) return;
+    if (!selectedShotNumber) {
+      setQuantity(1);
+      return;
+    }
+    const selectedEntry = options.find((entry) => entry.value === selectedShotNumber);
+    const selectedStock =
+      selectedEntry?.status === SHOT_NUMBER_STATUS.AVAILABLE
+        ? selectedEntry.stock || 0
+        : 0;
+    const nextMax = selectedStock > 0 ? selectedStock : 1;
+    setQuantity((prev) => Math.min(prev, nextMax));
+  }, [product, selectedShotNumber]);
+
   const handleAddToCart = async () => {
     if (!user) {
       toast.error("Please login");
@@ -88,9 +110,13 @@ export default function ProductDetail() {
       setShotNumberError("Παρακαλώ επιλέξτε Νούμερο");
       return;
     }
-    await addToCart(product, quantity, { shotNumber: selectedShotNumber || null });
-    setShotNumberError("");
-    toast.success("Added to cart!");
+    try {
+      await addToCart(product, quantity, { shotNumber: selectedShotNumber || null });
+      setShotNumberError("");
+      toast.success("Added to cart!");
+    } catch (err) {
+      toast.error(err?.message || "Failed to add to cart");
+    }
   };
 
   const handleSubmitReview = async (e) => {
@@ -153,8 +179,20 @@ export default function ProductDetail() {
   const shotNumberOptions = normalizeShotNumberEntries(
     product.shotgunShells?.numbers || product.numbers,
     product.shotgunShells?.shotNumber || product.shotNumber,
-  ).sort((a, b) => Number(b.value) - Number(a.value));
+  )
+    .filter((entry) => entry.status !== SHOT_NUMBER_STATUS.HIDDEN)
+    .sort((a, b) => Number(a.value) - Number(b.value));
   const hasShotNumbers = shotNumberOptions.length > 0;
+  const selectedShotNumberEntry = shotNumberOptions.find(
+    (entry) => entry.value === selectedShotNumber,
+  );
+  const selectedShotNumberStock =
+    selectedShotNumberEntry?.status === SHOT_NUMBER_STATUS.AVAILABLE
+      ? selectedShotNumberEntry.stock || 0
+      : 0;
+  const maxAllowedQuantity = hasShotNumbers
+    ? selectedShotNumberStock
+    : Number(product.stock) || 0;
 
   return (
     <div className="page-container py-8 animate-fade-in">
@@ -203,45 +241,38 @@ export default function ProductDetail() {
 
         {/* Info */}
         <div>
-          <span className="badge bg-primary-50 dark:bg-primary-500/10 text-primary-600 text-xs uppercase tracking-wide mb-3">
-            {product.category}
-          </span>
+          <p className="text-sm font-semibold text-surface-500 mb-1">Product Name</p>
           <h1 className="font-display text-3xl font-bold text-surface-900 dark:text-white mb-3">
             {product.name}
           </h1>
-
-          {/* Rating */}
-          <div className="flex items-center gap-2 mb-4">
-            <div className="flex">
-              {Array.from({ length: 5 }, (_, i) => (
-                <Star
-                  key={i}
-                  size={18}
-                  className={
-                    i < Math.round(product.rating || 0)
-                      ? "text-amber-400 fill-amber-400"
-                      : "text-surface-300"
-                  }
-                />
-              ))}
-            </div>
-            <span className="text-surface-500 text-sm">
-              {product.rating || 0} ({product.reviewCount || 0} reviews)
-            </span>
-          </div>
 
           <p className="text-3xl font-bold text-primary-500 mb-4">
             ${product.price?.toFixed(2)}
           </p>
 
+          {/* Rich Text Description */}
+          <p className="text-sm font-semibold text-surface-500 mb-1">Description</p>
+          {product.description ? (
+            <div
+              className="prose prose-sm max-w-none mb-6 dark:prose-invert"
+              dangerouslySetInnerHTML={{ __html: product.description }}
+            />
+          ) : (
+            <p className="text-surface-600 dark:text-surface-300 leading-relaxed mb-6">
+              {product.description}
+            </p>
+          )}
+
           {hasShotNumbers && (
             <div className="mb-4">
+              <p className="text-sm font-semibold text-surface-500 mb-1">Νούμερα Φυσιγγίων</p>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-semibold mr-1">Νούμερα:</span>
                 {shotNumberOptions.map((entry) => {
                   const isSelected = selectedShotNumber === entry.value;
-                  const isAvailable = entry.available;
-                  const stateClass = isSelected
+                  const isAvailable =
+                    entry.status === SHOT_NUMBER_STATUS.AVAILABLE &&
+                    (entry.stock || 0) > 0;
+                  const stateClass = isSelected && isAvailable
                     ? "bg-black border-black text-white"
                     : isAvailable
                       ? "bg-white border-black text-black hover:bg-surface-100"
@@ -263,39 +294,29 @@ export default function ProductDetail() {
                   );
                 })}
               </div>
+              {selectedShotNumberEntry && selectedShotNumberStock > 10 && (
+                <p className="text-xs text-green-600 mt-1">
+                  Διαθέσιμα: {selectedShotNumberStock} κουτιά
+                </p>
+              )}
+              {selectedShotNumberEntry &&
+                selectedShotNumberStock > 0 &&
+                selectedShotNumberStock <= 10 && (
+                <p className="text-xs text-amber-600 mt-1">
+                  Προσοχή: Απομένουν μόνο {selectedShotNumberStock} κουτιά!
+                </p>
+              )}
+              {selectedShotNumberEntry && selectedShotNumberStock === 0 && (
+                <p className="text-xs text-red-600 mt-1">Μη διαθέσιμο</p>
+              )}
               {shotNumberError && (
                 <p className="text-xs text-red-600 mt-1">{shotNumberError}</p>
               )}
             </div>
           )}
 
-          {/* Rich Text Description */}
-          {product.description ? (
-            <div
-              className="prose prose-sm max-w-none mb-6 dark:prose-invert"
-              dangerouslySetInnerHTML={{ __html: product.description }}
-            />
-          ) : (
-            <p className="text-surface-600 dark:text-surface-300 leading-relaxed mb-6">
-              {product.description}
-            </p>
-          )}
-
-          {/* Stock */}
-          <div className="flex items-center gap-2 mb-6">
-            <Package
-              size={16}
-              className={product.stock > 0 ? "text-green-500" : "text-red-500"}
-            />
-            <span
-              className={`text-sm font-medium ${product.stock > 0 ? "text-green-600" : "text-red-500"}`}
-            >
-              {product.stock > 0 ? `${product.stock} in stock` : "Out of stock"}
-            </span>
-          </div>
-
           {/* Quantity */}
-          {product.stock > 0 && (
+          {maxAllowedQuantity > 0 && (
             <div className="flex items-center gap-4 mb-6">
               <span className="text-sm font-medium">Quantity</span>
               <div className="flex items-center gap-2">
@@ -308,7 +329,7 @@ export default function ProductDetail() {
                 <span className="w-10 text-center font-medium">{quantity}</span>
                 <button
                   onClick={() =>
-                    setQuantity(Math.min(product.stock, quantity + 1))
+                    setQuantity(Math.min(maxAllowedQuantity, quantity + 1))
                   }
                   className="w-9 h-9 rounded-lg border border-surface-200 dark:border-surface-700 flex items-center justify-center hover:bg-surface-100 dark:hover:bg-surface-800 transition-colors"
                 >
@@ -322,11 +343,11 @@ export default function ProductDetail() {
           <div className="flex gap-3">
             <button
               onClick={handleAddToCart}
-              disabled={product.stock === 0}
+              disabled={!hasShotNumbers && product.stock === 0}
               className="btn-primary flex-1 flex items-center justify-center gap-2"
             >
               <ShoppingCart size={18} />
-              {product.stock === 0 ? "Out of Stock" : "Add to Cart"}
+              {!hasShotNumbers && product.stock === 0 ? "Out of Stock" : "Add to Cart"}
             </button>
             <button
               onClick={() => {
