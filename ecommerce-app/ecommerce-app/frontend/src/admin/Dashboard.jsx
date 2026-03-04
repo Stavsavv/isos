@@ -1,11 +1,12 @@
-import { useState, useEffect } from 'react';
-import { collection, getDocs, query, orderBy, where, Timestamp } from 'firebase/firestore';
+import { useState, useEffect, lazy, Suspense } from 'react';
+import { collection, getDocs, query, orderBy } from 'firebase/firestore';
 import { db } from '../firebase/config.js';
 import AdminLayout from '../components/AdminLayout.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import { Users, Package, ShoppingBag, DollarSign, TrendingUp } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { format, subMonths, startOfMonth, endOfMonth } from 'date-fns';
+
+const DashboardCharts = lazy(() => import('./DashboardCharts.jsx'));
 
 function StatCard({ icon: Icon, label, value, change, color }) {
   return (
@@ -83,32 +84,9 @@ export default function AdminDashboard() {
       </div>
 
       {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        <div className="card p-6">
-          <h3 className="font-semibold mb-4">Orders per Month</h3>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={monthlyData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
-              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Bar dataKey="orders" fill="#e55a28" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="card p-6">
-          <h3 className="font-semibold mb-4">Revenue per Month ($)</h3>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={monthlyData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
-              <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip formatter={(v) => [`$${v}`, 'Revenue']} />
-              <Line type="monotone" dataKey="revenue" stroke="#e55a28" strokeWidth={2} dot={{ fill: '#e55a28' }} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
+      <Suspense fallback={<LoadingSpinner className="py-8" />}>
+        <DashboardCharts monthlyData={monthlyData} />
+      </Suspense>
 
       {/* Recent orders */}
       <div className="card p-6">

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+﻿import { useState, useEffect } from 'react';
 import { collection, getDocs, updateDoc, deleteDoc, doc, query, orderBy } from 'firebase/firestore';
 import { db } from '../firebase/config.js';
 import AdminLayout from '../components/AdminLayout.jsx';
@@ -136,7 +136,10 @@ export default function AdminOrders() {
                     <img src={item.image || 'https://via.placeholder.com/40'} alt="" className="w-10 h-10 rounded-lg object-cover" />
                     <div className="flex-1">
                       <p className="text-sm font-medium">{item.name}</p>
-                      <p className="text-xs text-surface-500">×{item.quantity} — ${item.price?.toFixed(2)}</p>
+                      {item.shotNumber && (
+                        <p className="text-xs text-surface-500">Νούμερο: {item.shotNumber}</p>
+                      )}
+                      <p className="text-xs text-surface-500">Ã—{item.quantity} â€” ${item.price?.toFixed(2)}</p>
                     </div>
                     <span className="text-sm">${(item.price * item.quantity).toFixed(2)}</span>
                   </div>
@@ -163,3 +166,5 @@ export default function AdminOrders() {
     </AdminLayout>
   );
 }
+
+

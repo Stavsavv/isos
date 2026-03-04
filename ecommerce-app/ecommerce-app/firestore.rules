@@ -65,6 +65,11 @@ service cloud.firestore {
     // Wishlists collection
     match /wishlists/{userId} {
       allow read, write: if isOwner(userId);
+
+      // Optional nested schema support: /wishlists/{userId}/items/{itemId}
+      match /items/{itemId} {
+        allow read, write: if isOwner(userId);
+      }
     }
 
     // Analytics (admin only)

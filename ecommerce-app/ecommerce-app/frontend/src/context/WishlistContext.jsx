@@ -10,7 +10,7 @@ export function WishlistProvider({ children }) {
   const [items, setItems] = useState([]);
 
   useEffect(() => {
-    if (!user) { setItems([]); return; }
+    if (!user?.uid) { setItems([]); return; }
     const ref = doc(db, 'wishlists', user.uid);
     const unsub = onSnapshot(
       ref,
@@ -23,11 +23,11 @@ export function WishlistProvider({ children }) {
         setItems([]);
       }
     );
-    return unsub;
+    return () => unsub();
   }, [user]);
 
   const save = useCallback(async (newItems) => {
-    if (!user) return;
+    if (!user?.uid) return;
     await setDoc(doc(db, 'wishlists', user.uid), { items: newItems });
   }, [user]);
 

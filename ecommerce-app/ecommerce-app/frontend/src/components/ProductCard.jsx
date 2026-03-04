@@ -3,6 +3,7 @@ import { ShoppingCart, Heart, Star } from 'lucide-react';
 import { useCart } from '../context/CartContext.jsx';
 import { useWishlist } from '../context/WishlistContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
+import { normalizeShotNumberEntries } from '../constants/fysiggia.js';
 import toast from 'react-hot-toast';
 
 export default function ProductCard({ product }) {
@@ -14,6 +15,11 @@ export default function ProductCard({ product }) {
     e.preventDefault();
     if (!user) { toast.error('Please login to add items to cart'); return; }
     if (product.stock === 0) { toast.error('Out of stock'); return; }
+    const hasShotNumbers = normalizeShotNumberEntries(
+      product.shotgunShells?.numbers || product.numbers,
+      product.shotgunShells?.shotNumber || product.shotNumber,
+    ).length > 0;
+    if (hasShotNumbers) { toast.error('Παρακαλώ επιλέξτε Νούμερο στη σελίδα προϊόντος'); return; }
     await addToCart(product, 1);
     toast.success('Added to cart!');
   };

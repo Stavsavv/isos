@@ -52,28 +52,31 @@ export default function Cart() {
         {/* Items */}
         <div className="lg:col-span-2 space-y-4">
           {items.map((item) => (
-            <div key={item.id} className="card p-4 flex gap-4 animate-slide-up">
+            <div key={item.cartItemId || item.id} className="card p-4 flex gap-4 animate-slide-up">
               <img
                 src={item.image || 'https://via.placeholder.com/100'}
                 alt={item.name}
                 className="w-20 h-20 object-cover rounded-lg flex-shrink-0"
               />
               <div className="flex-1 min-w-0">
-                <Link to={`/products/${item.id}`} className="font-medium hover:text-primary-600 transition-colors line-clamp-2">
+                <Link to={`/products/${item.productId || item.id}`} className="font-medium hover:text-primary-600 transition-colors line-clamp-2">
                   {item.name}
                 </Link>
                 <p className="text-primary-500 font-bold mt-1">${item.price.toFixed(2)}</p>
+                {item.shotNumber && (
+                  <p className="text-xs text-surface-500 mt-1">Νούμερο: {item.shotNumber}</p>
+                )}
                 <div className="flex items-center justify-between mt-3">
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => updateQuantity(item.id, item.quantity - 1)}
+                      onClick={() => updateQuantity(item.cartItemId || item.id, item.quantity - 1)}
                       className="w-7 h-7 rounded border border-surface-200 dark:border-surface-700 flex items-center justify-center hover:bg-surface-100 dark:hover:bg-surface-800 transition-colors"
                     >
                       <Minus size={12} />
                     </button>
                     <span className="w-8 text-center text-sm font-medium">{item.quantity}</span>
                     <button
-                      onClick={() => updateQuantity(item.id, item.quantity + 1)}
+                      onClick={() => updateQuantity(item.cartItemId || item.id, item.quantity + 1)}
                       disabled={item.quantity >= item.stock}
                       className="w-7 h-7 rounded border border-surface-200 dark:border-surface-700 flex items-center justify-center hover:bg-surface-100 dark:hover:bg-surface-800 transition-colors disabled:opacity-40"
                     >
@@ -83,7 +86,7 @@ export default function Cart() {
                   <div className="flex items-center gap-3">
                     <span className="font-semibold">${(item.price * item.quantity).toFixed(2)}</span>
                     <button
-                      onClick={() => removeFromCart(item.id)}
+                      onClick={() => removeFromCart(item.cartItemId || item.id)}
                       className="p-1.5 text-surface-400 hover:text-red-500 transition-colors"
                     >
                       <Trash2 size={16} />

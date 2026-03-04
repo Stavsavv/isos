@@ -184,11 +184,14 @@ export default function Checkout() {
             </h2>
             <div className="space-y-3 mb-5">
               {items.map((item) => (
-                <div key={item.id} className="flex gap-3">
+                <div key={item.cartItemId || item.id} className="flex gap-3">
                   <img src={item.image || 'https://via.placeholder.com/50'} alt={item.name} className="w-12 h-12 object-cover rounded-lg" />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium line-clamp-1">{item.name}</p>
                     <p className="text-xs text-surface-500">Qty: {item.quantity}</p>
+                    {item.shotNumber && (
+                      <p className="text-xs text-surface-500">Νούμερο: {item.shotNumber}</p>
+                    )}
                   </div>
                   <span className="text-sm font-medium">{formatEUR(item.price * item.quantity)}</span>
                 </div>

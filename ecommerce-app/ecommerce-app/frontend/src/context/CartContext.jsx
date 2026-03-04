@@ -2,8 +2,39 @@ import { createContext, useContext, useEffect, useState, useCallback } from 'rea
 import { doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import { useAuth } from './AuthContext';
+import {
+  getAvailableStockForShotNumber,
+} from '../constants/fysiggia.js';
 
 const CartContext = createContext(null);
+
+function createCartItemId(productId, shotNumber) {
+  return `${productId}::${shotNumber || ''}`;
+}
+
+function normalizeCartItem(item) {
+  const shotNumber = item?.shotNumber || null;
+  const perNumberStock = Number(item?.shotNumberStock);
+  const normalizedStock = Number.isFinite(perNumberStock) && perNumberStock >= 0
+    ? perNumberStock
+    : Number(item?.stock) || 0;
+  return {
+    ...item,
+    productId: item?.productId || item?.id,
+    cartItemId: item?.cartItemId || createCartItemId(item?.productId || item?.id, shotNumber),
+    shotNumber,
+    stock: normalizedStock,
+    shotNumberStock: shotNumber ? normalizedStock : null,
+  };
+}
+
+function resolveItemStock(product, shotNumber) {
+  if (!shotNumber) return Number(product?.stock) || 0;
+  return getAvailableStockForShotNumber(
+    product?.shotgunShells || { numbers: product?.numbers, shotNumber: product?.shotNumber },
+    shotNumber,
+  );
+}
 
 export function CartProvider({ children }) {
   const { user } = useAuth();
@@ -23,7 +54,7 @@ export function CartProvider({ children }) {
       cartRef,
       (snap) => {
         if (snap.exists()) {
-          setItems(snap.data().items || []);
+          setItems((snap.data().items || []).map(normalizeCartItem));
           setCoupon(snap.data().coupon || null);
         } else {
           setItems([]);
@@ -45,23 +76,43 @@ export function CartProvider({ children }) {
     await setDoc(cartRef, { items: newItems, coupon: newCoupon, updatedAt: new Date() });
   }, [user, coupon]);
 
-  const addToCart = useCallback(async (product, quantity = 1) => {
-    const existing = items.find((i) => i.id === product.id);
+  const addToCart = useCallback(async (product, quantity = 1, options = {}) => {
+    const shotNumber = options?.shotNumber || null;
+    const availableStock = resolveItemStock(product, shotNumber);
+    if (shotNumber && availableStock <= 0) {
+      throw new Error(`Διαθέσιμα μόνο 0 κουτιά για το Νούμερο ${shotNumber}`);
+    }
+    const cartItemId = createCartItemId(product.id, shotNumber);
+    const existing = items.find((i) => (i.cartItemId || createCartItemId(i.id, i.shotNumber)) === cartItemId);
     let newItems;
     if (existing) {
+      const nextQty = existing.quantity + quantity;
+      if (nextQty > availableStock) {
+        throw new Error(`Διαθέσιμα μόνο ${availableStock} κουτιά για το Νούμερο ${shotNumber}`);
+      }
       newItems = items.map((i) =>
-        i.id === product.id ? { ...i, quantity: Math.min(i.quantity + quantity, product.stock) } : i
+        (i.cartItemId || createCartItemId(i.id, i.shotNumber)) === cartItemId
+          ? { ...i, quantity: nextQty, stock: availableStock, shotNumberStock: shotNumber ? availableStock : null }
+          : i
       );
     } else {
+      if (quantity > availableStock) {
+        if (shotNumber) throw new Error(`Διαθέσιμα μόνο ${availableStock} κουτιά για το Νούμερο ${shotNumber}`);
+        throw new Error(`Διαθέσιμα μόνο ${availableStock} κουτιά`);
+      }
       newItems = [
         ...items,
         {
+          cartItemId,
+          productId: product.id,
           id: product.id,
           name: product.name,
           price: product.price,
           image: product.images?.[0] || '',
           quantity,
-          stock: product.stock,
+          stock: availableStock,
+          shotNumber,
+          shotNumberStock: shotNumber ? availableStock : null,
         },
       ];
     }
@@ -69,15 +120,19 @@ export function CartProvider({ children }) {
     if (user) await saveCart(newItems);
   }, [items, user, saveCart]);
 
-  const removeFromCart = useCallback(async (productId) => {
-    const newItems = items.filter((i) => i.id !== productId);
+  const removeFromCart = useCallback(async (cartItemId) => {
+    const newItems = items.filter((i) => (i.cartItemId || createCartItemId(i.id, i.shotNumber)) !== cartItemId);
     setItems(newItems);
     if (user) await saveCart(newItems);
   }, [items, user, saveCart]);
 
-  const updateQuantity = useCallback(async (productId, quantity) => {
-    if (quantity <= 0) return removeFromCart(productId);
-    const newItems = items.map((i) => (i.id === productId ? { ...i, quantity } : i));
+  const updateQuantity = useCallback(async (cartItemId, quantity) => {
+    if (quantity <= 0) return removeFromCart(cartItemId);
+    const newItems = items.map((i) => (
+      (i.cartItemId || createCartItemId(i.id, i.shotNumber)) === cartItemId
+        ? { ...i, quantity: Math.min(quantity, i.stock || 0) }
+        : i
+    ));
     setItems(newItems);
     if (user) await saveCart(newItems);
   }, [items, user, saveCart, removeFromCart]);

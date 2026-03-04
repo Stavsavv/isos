@@ -1,15 +1,31 @@
-import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useState, useEffect } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import {
-  doc, getDoc, collection, addDoc, query, orderBy, getDocs, updateDoc, increment, serverTimestamp,
-} from 'firebase/firestore';
-import { db } from '../firebase/config.js';
-import { useCart } from '../context/CartContext.jsx';
-import { useWishlist } from '../context/WishlistContext.jsx';
-import { useAuth } from '../context/AuthContext.jsx';
-import LoadingSpinner from '../components/LoadingSpinner.jsx';
-import toast from 'react-hot-toast';
-import { Star, ShoppingCart, Heart, Minus, Plus, ArrowLeft, Package } from 'lucide-react';
+  doc,
+  getDoc,
+  collection,
+  addDoc,
+  query,
+  orderBy,
+  getDocs,
+  serverTimestamp,
+} from "firebase/firestore";
+import { db } from "../firebase/config.js";
+import { useCart } from "../context/CartContext.jsx";
+import { useWishlist } from "../context/WishlistContext.jsx";
+import { useAuth } from "../context/AuthContext.jsx";
+import LoadingSpinner from "../components/LoadingSpinner.jsx";
+import { normalizeShotNumberEntries } from "../constants/fysiggia.js";
+import toast from "react-hot-toast";
+import {
+  Star,
+  ShoppingCart,
+  Heart,
+  Minus,
+  Plus,
+  ArrowLeft,
+  Package,
+} from "lucide-react";
 
 export default function ProductDetail() {
   const { id } = useParams();
@@ -22,23 +38,40 @@ export default function ProductDetail() {
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState(0);
   const [quantity, setQuantity] = useState(1);
+  const [selectedShotNumber, setSelectedShotNumber] = useState("");
+  const [shotNumberError, setShotNumberError] = useState("");
   const [submittingReview, setSubmittingReview] = useState(false);
-  const [reviewData, setReviewData] = useState({ rating: 5, comment: '' });
+  const [reviewData, setReviewData] = useState({ rating: 5, comment: "" });
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const docRef = doc(db, 'products', id);
+        const docRef = doc(db, "products", id);
         const docSnap = await getDoc(docRef);
-        if (!docSnap.exists()) { navigate('/404'); return; }
+        if (!docSnap.exists()) {
+          navigate("/404");
+          return;
+        }
         setProduct({ id: docSnap.id, ...docSnap.data() });
+      } catch (err) {
+        console.error(err);
+        toast.error("Failed to load product");
+        return;
+      }
 
-        const reviewsQ = query(collection(db, 'products', id, 'reviews'), orderBy('createdAt', 'desc'));
+      try {
+        const reviewsQ = query(
+          collection(db, "products", id, "reviews"),
+          orderBy("createdAt", "desc"),
+        );
         const reviewsSnap = await getDocs(reviewsQ);
         setReviews(reviewsSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
       } catch (err) {
-        console.error(err);
-        toast.error('Failed to load product');
+        if (err?.code !== "permission-denied") {
+          console.error(err);
+          toast.error("Failed to load reviews");
+        }
+        setReviews([]);
       } finally {
         setLoading(false);
       }
@@ -47,36 +80,67 @@ export default function ProductDetail() {
   }, [id, navigate]);
 
   const handleAddToCart = async () => {
-    if (!user) { toast.error('Please login'); return; }
-    await addToCart(product, quantity);
-    toast.success('Added to cart!');
+    if (!user) {
+      toast.error("Please login");
+      return;
+    }
+    if (hasShotNumbers && !selectedShotNumber) {
+      setShotNumberError("Παρακαλώ επιλέξτε Νούμερο");
+      return;
+    }
+    await addToCart(product, quantity, { shotNumber: selectedShotNumber || null });
+    setShotNumberError("");
+    toast.success("Added to cart!");
   };
 
   const handleSubmitReview = async (e) => {
     e.preventDefault();
-    if (!user) { toast.error('Please login to review'); return; }
-    if (!reviewData.comment.trim()) { toast.error('Please write a comment'); return; }
+    if (!user) {
+      toast.error("Please login to review");
+      return;
+    }
+    if (!reviewData.comment.trim()) {
+      toast.error("Please write a comment");
+      return;
+    }
     setSubmittingReview(true);
     try {
-      await addDoc(collection(db, 'products', id, 'reviews'), {
+      await addDoc(collection(db, "products", id, "reviews"), {
         userId: user.uid,
-        userName: user.displayName || 'Anonymous',
+        userName: user.displayName || "Anonymous",
         rating: reviewData.rating,
         comment: reviewData.comment,
         createdAt: serverTimestamp(),
       });
       // Update rating
       const totalReviews = reviews.length + 1;
-      const newRating = (reviews.reduce((s, r) => s + r.rating, 0) + reviewData.rating) / totalReviews;
-      await updateDoc(doc(db, 'products', id), {
-        rating: Math.round(newRating * 10) / 10,
-        reviewCount: increment(1),
-      });
-      setReviews([{ id: Date.now(), ...reviewData, userId: user.uid, userName: user.displayName || 'Anonymous', createdAt: { toDate: () => new Date() } }, ...reviews]);
-      setReviewData({ rating: 5, comment: '' });
-      toast.success('Review submitted!');
-    } catch {
-      toast.error('Failed to submit review');
+      const newRating =
+        (reviews.reduce((s, r) => s + r.rating, 0) + reviewData.rating) /
+        totalReviews;
+      setReviews([
+        {
+          id: Date.now(),
+          ...reviewData,
+          userId: user.uid,
+          userName: user.displayName || "Anonymous",
+          createdAt: { toDate: () => new Date() },
+        },
+        ...reviews,
+      ]);
+      setProduct((prev) =>
+        prev
+          ? {
+              ...prev,
+              rating: Math.round(newRating * 10) / 10,
+              reviewCount: (prev.reviewCount || 0) + 1,
+            }
+          : prev,
+      );
+      setReviewData({ rating: 5, comment: "" });
+      toast.success("Review submitted!");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to submit review");
     } finally {
       setSubmittingReview(false);
     }
@@ -86,10 +150,18 @@ export default function ProductDetail() {
   if (!product) return null;
 
   const wishlisted = isWishlisted(product.id);
+  const shotNumberOptions = normalizeShotNumberEntries(
+    product.shotgunShells?.numbers || product.numbers,
+    product.shotgunShells?.shotNumber || product.shotNumber,
+  ).sort((a, b) => Number(b.value) - Number(a.value));
+  const hasShotNumbers = shotNumberOptions.length > 0;
 
   return (
     <div className="page-container py-8 animate-fade-in">
-      <button onClick={() => navigate(-1)} className="flex items-center gap-2 text-surface-500 hover:text-surface-900 dark:hover:text-white mb-6 transition-colors">
+      <button
+        onClick={() => navigate(-1)}
+        className="flex items-center gap-2 text-surface-500 hover:text-surface-900 dark:hover:text-white mb-6 transition-colors"
+      >
         <ArrowLeft size={16} /> Back
       </button>
 
@@ -98,7 +170,10 @@ export default function ProductDetail() {
         <div>
           <div className="aspect-square rounded-2xl overflow-hidden bg-surface-100 dark:bg-surface-800 mb-4">
             <img
-              src={product.images?.[selectedImage] || 'https://via.placeholder.com/600?text=No+Image'}
+              src={
+                product.images?.[selectedImage] ||
+                "https://via.placeholder.com/600?text=No+Image"
+              }
               alt={product.name}
               className="w-full h-full object-cover"
             />
@@ -110,10 +185,16 @@ export default function ProductDetail() {
                   key={i}
                   onClick={() => setSelectedImage(i)}
                   className={`flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden border-2 transition-colors ${
-                    selectedImage === i ? 'border-primary-500' : 'border-transparent'
+                    selectedImage === i
+                      ? "border-primary-500"
+                      : "border-transparent"
                   }`}
                 >
-                  <img src={img} alt="" className="w-full h-full object-cover" />
+                  <img
+                    src={img}
+                    alt=""
+                    className="w-full h-full object-cover"
+                  />
                 </button>
               ))}
             </div>
@@ -125,26 +206,91 @@ export default function ProductDetail() {
           <span className="badge bg-primary-50 dark:bg-primary-500/10 text-primary-600 text-xs uppercase tracking-wide mb-3">
             {product.category}
           </span>
-          <h1 className="font-display text-3xl font-bold text-surface-900 dark:text-white mb-3">{product.name}</h1>
+          <h1 className="font-display text-3xl font-bold text-surface-900 dark:text-white mb-3">
+            {product.name}
+          </h1>
 
           {/* Rating */}
           <div className="flex items-center gap-2 mb-4">
             <div className="flex">
               {Array.from({ length: 5 }, (_, i) => (
-                <Star key={i} size={18} className={i < Math.round(product.rating || 0) ? 'text-amber-400 fill-amber-400' : 'text-surface-300'} />
+                <Star
+                  key={i}
+                  size={18}
+                  className={
+                    i < Math.round(product.rating || 0)
+                      ? "text-amber-400 fill-amber-400"
+                      : "text-surface-300"
+                  }
+                />
               ))}
             </div>
-            <span className="text-surface-500 text-sm">{product.rating || 0} ({product.reviewCount || 0} reviews)</span>
+            <span className="text-surface-500 text-sm">
+              {product.rating || 0} ({product.reviewCount || 0} reviews)
+            </span>
           </div>
 
-          <p className="text-3xl font-bold text-primary-500 mb-4">${product.price?.toFixed(2)}</p>
-          <p className="text-surface-600 dark:text-surface-300 leading-relaxed mb-6">{product.description}</p>
+          <p className="text-3xl font-bold text-primary-500 mb-4">
+            ${product.price?.toFixed(2)}
+          </p>
+
+          {hasShotNumbers && (
+            <div className="mb-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold mr-1">Νούμερα:</span>
+                {shotNumberOptions.map((entry) => {
+                  const isSelected = selectedShotNumber === entry.value;
+                  const isAvailable = entry.available;
+                  const stateClass = isSelected
+                    ? "bg-black border-black text-white"
+                    : isAvailable
+                      ? "bg-white border-black text-black hover:bg-surface-100"
+                      : "bg-white border-red-500 text-red-600 cursor-not-allowed";
+
+                  return (
+                    <button
+                      key={entry.value}
+                      type="button"
+                      disabled={!isAvailable}
+                      onClick={() => {
+                        setSelectedShotNumber(entry.value);
+                        setShotNumberError("");
+                      }}
+                      className={`min-w-10 h-9 px-2 rounded-md border text-sm font-medium transition-colors ${stateClass}`}
+                    >
+                      {entry.value}
+                    </button>
+                  );
+                })}
+              </div>
+              {shotNumberError && (
+                <p className="text-xs text-red-600 mt-1">{shotNumberError}</p>
+              )}
+            </div>
+          )}
+
+          {/* Rich Text Description */}
+          {product.description ? (
+            <div
+              className="prose prose-sm max-w-none mb-6 dark:prose-invert"
+              dangerouslySetInnerHTML={{ __html: product.description }}
+            />
+          ) : (
+            <p className="text-surface-600 dark:text-surface-300 leading-relaxed mb-6">
+              {product.description}
+            </p>
+          )}
 
           {/* Stock */}
           <div className="flex items-center gap-2 mb-6">
-            <Package size={16} className={product.stock > 0 ? 'text-green-500' : 'text-red-500'} />
-            <span className={`text-sm font-medium ${product.stock > 0 ? 'text-green-600' : 'text-red-500'}`}>
-              {product.stock > 0 ? `${product.stock} in stock` : 'Out of stock'}
+            <Package
+              size={16}
+              className={product.stock > 0 ? "text-green-500" : "text-red-500"}
+            />
+            <span
+              className={`text-sm font-medium ${product.stock > 0 ? "text-green-600" : "text-red-500"}`}
+            >
+              {product.stock > 0 ? `${product.stock} in stock` : "Out of stock"}
             </span>
           </div>
 
@@ -161,7 +307,9 @@ export default function ProductDetail() {
                 </button>
                 <span className="w-10 text-center font-medium">{quantity}</span>
                 <button
-                  onClick={() => setQuantity(Math.min(product.stock, quantity + 1))}
+                  onClick={() =>
+                    setQuantity(Math.min(product.stock, quantity + 1))
+                  }
                   className="w-9 h-9 rounded-lg border border-surface-200 dark:border-surface-700 flex items-center justify-center hover:bg-surface-100 dark:hover:bg-surface-800 transition-colors"
                 >
                   <Plus size={14} />
@@ -178,13 +326,22 @@ export default function ProductDetail() {
               className="btn-primary flex-1 flex items-center justify-center gap-2"
             >
               <ShoppingCart size={18} />
-              {product.stock === 0 ? 'Out of Stock' : 'Add to Cart'}
+              {product.stock === 0 ? "Out of Stock" : "Add to Cart"}
             </button>
             <button
-              onClick={() => { if (!user) { toast.error('Please login'); return; } toggle(product); toast.success(wishlisted ? 'Removed from wishlist' : 'Added to wishlist!'); }}
-              className={`p-3 rounded-lg border transition-colors ${wishlisted ? 'bg-red-50 border-red-200 text-red-500 dark:bg-red-500/10 dark:border-red-500/30' : 'border-surface-200 dark:border-surface-700 hover:bg-surface-100 dark:hover:bg-surface-800'}`}
+              onClick={() => {
+                if (!user) {
+                  toast.error("Please login");
+                  return;
+                }
+                toggle(product);
+                toast.success(
+                  wishlisted ? "Removed from wishlist" : "Added to wishlist!",
+                );
+              }}
+              className={`p-3 rounded-lg border transition-colors ${wishlisted ? "bg-red-50 border-red-200 text-red-500 dark:bg-red-500/10 dark:border-red-500/30" : "border-surface-200 dark:border-surface-700 hover:bg-surface-100 dark:hover:bg-surface-800"}`}
             >
-              <Heart size={18} fill={wishlisted ? 'currentColor' : 'none'} />
+              <Heart size={18} fill={wishlisted ? "currentColor" : "none"} />
             </button>
           </div>
         </div>
@@ -192,7 +349,9 @@ export default function ProductDetail() {
 
       {/* Reviews */}
       <div className="border-t border-surface-200 dark:border-surface-800 pt-12">
-        <h2 className="font-display text-2xl font-bold mb-8">Customer Reviews ({reviews.length})</h2>
+        <h2 className="font-display text-2xl font-bold mb-8">
+          Customer Reviews ({reviews.length})
+        </h2>
 
         {/* Submit review */}
         {user && (
@@ -202,8 +361,19 @@ export default function ProductDetail() {
               <label className="text-sm font-medium mb-2 block">Rating</label>
               <div className="flex gap-1">
                 {[1, 2, 3, 4, 5].map((n) => (
-                  <button key={n} type="button" onClick={() => setReviewData({ ...reviewData, rating: n })}>
-                    <Star size={24} className={n <= reviewData.rating ? 'text-amber-400 fill-amber-400' : 'text-surface-300'} />
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setReviewData({ ...reviewData, rating: n })}
+                  >
+                    <Star
+                      size={24}
+                      className={
+                        n <= reviewData.rating
+                          ? "text-amber-400 fill-amber-400"
+                          : "text-surface-300"
+                      }
+                    />
                   </button>
                 ))}
               </div>
@@ -212,12 +382,18 @@ export default function ProductDetail() {
               <label className="text-sm font-medium mb-2 block">Comment</label>
               <textarea
                 value={reviewData.comment}
-                onChange={(e) => setReviewData({ ...reviewData, comment: e.target.value })}
+                onChange={(e) =>
+                  setReviewData({ ...reviewData, comment: e.target.value })
+                }
                 className="input min-h-[100px] resize-none"
                 placeholder="Share your experience..."
               />
             </div>
-            <button type="submit" disabled={submittingReview} className="btn-primary flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={submittingReview}
+              className="btn-primary flex items-center gap-2"
+            >
               {submittingReview && <LoadingSpinner size="sm" />} Submit Review
             </button>
           </form>
@@ -225,7 +401,9 @@ export default function ProductDetail() {
 
         {/* Reviews list */}
         {reviews.length === 0 ? (
-          <p className="text-surface-500 text-center py-8">No reviews yet. Be the first to review!</p>
+          <p className="text-surface-500 text-center py-8">
+            No reviews yet. Be the first to review!
+          </p>
         ) : (
           <div className="space-y-4">
             {reviews.map((review) => (
@@ -235,15 +413,27 @@ export default function ProductDetail() {
                     <div className="w-8 h-8 bg-primary-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
                       {review.userName?.[0]?.toUpperCase()}
                     </div>
-                    <span className="font-medium text-sm">{review.userName}</span>
+                    <span className="font-medium text-sm">
+                      {review.userName}
+                    </span>
                   </div>
                   <div className="flex">
                     {Array.from({ length: 5 }, (_, i) => (
-                      <Star key={i} size={14} className={i < review.rating ? 'text-amber-400 fill-amber-400' : 'text-surface-300'} />
+                      <Star
+                        key={i}
+                        size={14}
+                        className={
+                          i < review.rating
+                            ? "text-amber-400 fill-amber-400"
+                            : "text-surface-300"
+                        }
+                      />
                     ))}
                   </div>
                 </div>
-                <p className="text-surface-600 dark:text-surface-300 text-sm">{review.comment}</p>
+                <p className="text-surface-600 dark:text-surface-300 text-sm">
+                  {review.comment}
+                </p>
                 {review.createdAt?.toDate && (
                   <p className="text-xs text-surface-400 mt-2">
                     {review.createdAt.toDate().toLocaleDateString()}

@@ -80,6 +80,9 @@ export default function OrderDetail() {
                 <div className="flex-1">
                   <p className="font-medium text-sm">{item.name}</p>
                   <p className="text-surface-500 text-xs">Qty: {item.quantity} × ${item.price?.toFixed(2)}</p>
+                  {item.shotNumber && (
+                    <p className="text-surface-500 text-xs">Νούμερο: {item.shotNumber}</p>
+                  )}
                 </div>
                 <span className="font-semibold text-sm">${(item.price * item.quantity).toFixed(2)}</span>
               </div>
