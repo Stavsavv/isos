@@ -20,6 +20,11 @@ const Register = lazy(() => import('./pages/Register.jsx'));
 const ForgotPassword = lazy(() => import('./pages/ForgotPassword.jsx'));
 const Wishlist = lazy(() => import('./pages/Wishlist.jsx'));
 const NotFound = lazy(() => import('./pages/NotFound.jsx'));
+const About = lazy(() => import('./pages/About.jsx'));
+const Contact = lazy(() => import('./pages/Contact.jsx'));
+const Privacy = lazy(() => import('./pages/Privacy.jsx'));
+const Terms = lazy(() => import('./pages/Terms.jsx'));
+const ShippingReturns = lazy(() => import('./pages/ShippingReturns.jsx'));
 
 // Admin pages
 const AdminDashboard = lazy(() => import('./admin/Dashboard.jsx'));
@@ -44,6 +49,11 @@ function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
+              <Route path="/about" element={<About />} />
+              <Route path="/contact" element={<Contact />} />
+              <Route path="/privacy" element={<Privacy />} />
+              <Route path="/terms" element={<Terms />} />
+              <Route path="/shipping-returns" element={<ShippingReturns />} />
 
               {/* Protected user routes */}
               <Route path="/cart" element={<ProtectedRoute><Cart /></ProtectedRoute>} />

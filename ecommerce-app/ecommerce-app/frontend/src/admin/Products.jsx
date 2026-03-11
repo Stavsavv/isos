@@ -2,11 +2,6 @@
 import {
   collection,
   getDocs,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-  serverTimestamp,
   orderBy,
   query,
 } from "firebase/firestore";
@@ -25,6 +20,8 @@ import {
   normalizeShotNumberEntries,
   initialFysiggiaMeta,
 } from "../constants/fysiggia.js";
+import { formatCurrency } from "../config/app.js";
+import { deleteProduct, saveProduct } from "../services/adminApi.js";
 import "react-quill/dist/quill.snow.css";
 const ReactQuill = lazy(() => import("react-quill"));
 
@@ -270,7 +267,6 @@ export default function AdminProducts() {
         subcategory: form.subcategory || "",
         stock: isFysiggiaForm ? computedStock : parseInt(form.stock, 10),
         images: form.images,
-        updatedAt: serverTimestamp(),
       };
 
       if (isFysiggiaForm) {
@@ -292,30 +288,23 @@ export default function AdminProducts() {
       }
 
       if (editing) {
-        const changedFields = { updatedAt: serverTimestamp() };
         const previous = existingProduct || {};
+        const changedFields = {};
         if (previous.name !== data.name) changedFields.name = data.name;
         if (previous.description !== data.description) changedFields.description = data.description;
         if (Number(previous.price) !== Number(data.price)) changedFields.price = data.price;
         if (previous.category !== data.category) changedFields.category = data.category;
         if ((previous.subcategory || "") !== (data.subcategory || "")) changedFields.subcategory = data.subcategory;
         if (Number(previous.stock) !== Number(data.stock)) changedFields.stock = data.stock;
-        if (JSON.stringify(previous.images || []) !== JSON.stringify(data.images || [])) {
-          changedFields.images = data.images;
-        }
-        if (JSON.stringify(previous.shotgunShells || null) !== JSON.stringify(data.shotgunShells || null)) {
-          changedFields.shotgunShells = data.shotgunShells;
-        }
-        if (JSON.stringify(previous.numbers || null) !== JSON.stringify(data.numbers || null)) {
-          changedFields.numbers = normalizedNumbers;
-        }
-        await updateDoc(doc(db, "products", editing), changedFields);
+        if (JSON.stringify(previous.images || []) !== JSON.stringify(data.images || [])) changedFields.images = data.images;
+        if (JSON.stringify(previous.shotgunShells || null) !== JSON.stringify(data.shotgunShells || null)) changedFields.shotgunShells = data.shotgunShells;
+        if (JSON.stringify(previous.numbers || null) !== JSON.stringify(data.numbers || null)) changedFields.numbers = normalizedNumbers;
+        await saveProduct(editing, { ...previous, ...changedFields });
         toast.success("Product updated");
       } else {
         data.rating = 0;
         data.reviewCount = 0;
-        data.createdAt = serverTimestamp();
-        await addDoc(collection(db, "products"), data);
+        await saveProduct(null, data);
         toast.success("Product added");
       }
       setShowModal(false);
@@ -330,7 +319,7 @@ export default function AdminProducts() {
   const handleDelete = async (id) => {
     if (!confirm("Delete this product?")) return;
     try {
-      await deleteDoc(doc(db, "products", id));
+      await deleteProduct(id);
       setProducts((p) => p.filter((x) => x.id !== id));
       toast.success("Product deleted");
     } catch {
@@ -417,7 +406,7 @@ export default function AdminProducts() {
                         {product.category}
                       </td>
                       <td className="p-4 font-medium">
-                        ${product.price?.toFixed(2)}
+                        {formatCurrency(product.price)}
                       </td>
                       <td className="p-4">
                         <span
@@ -525,7 +514,7 @@ export default function AdminProducts() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm font-medium block mb-1">Price ($) *</label>
+                  <label className="text-sm font-medium block mb-1">Price *</label>
                   <input
                     required
                     type="number"

@@ -1,0 +1,12 @@
+{
+  "name": "shopnow-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "cd ecommerce-app\\ecommerce-app\\frontend && npm run dev",
+    "build": "cd ecommerce-app\\ecommerce-app\\frontend && npm run build",
+    "functions:check": "cd ecommerce-app\\ecommerce-app\\functions && node -e \"require('./index.js'); console.log('functions-index-ok')\"",
+    "test:rules": "cd ecommerce-app\\ecommerce-app\\functions && npm run test:rules",
+    "test:webhook": "cd ecommerce-app\\ecommerce-app\\functions && npm run test:webhook",
+    "deploy": "cd ecommerce-app\\ecommerce-app && npm run deploy"
+  }
+}

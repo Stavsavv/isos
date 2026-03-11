@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
-import { collection, getDocs, addDoc, deleteDoc, doc, serverTimestamp, query, orderBy } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy } from 'firebase/firestore';
 import { db } from '../firebase/config.js';
 import AdminLayout from '../components/AdminLayout.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import toast from 'react-hot-toast';
 import { Plus, Trash2, Tag, X } from 'lucide-react';
 import { format } from 'date-fns';
+import { createCoupon, deleteCoupon as deleteCouponById } from '../services/adminApi.js';
+import { formatCurrency } from '../config/app.js';
 
 const initialForm = { code: '', type: 'percent', value: '', minOrder: '', maxUses: '', active: true };
 
@@ -38,10 +40,9 @@ export default function AdminCoupons() {
         maxUses: form.maxUses ? parseInt(form.maxUses) : null,
         usedCount: 0,
         active: form.active,
-        createdAt: serverTimestamp(),
       };
-      const ref = await addDoc(collection(db, 'coupons'), data);
-      setCoupons([{ id: ref.id, ...data, createdAt: { toDate: () => new Date() } }, ...coupons]);
+      const result = await createCoupon(data);
+      setCoupons([{ id: result.id, ...data, createdAt: { toDate: () => new Date() } }, ...coupons]);
       toast.success('Coupon created!');
       setShowModal(false);
       setForm(initialForm);
@@ -54,9 +55,13 @@ export default function AdminCoupons() {
 
   const deleteCoupon = async (id) => {
     if (!confirm('Delete this coupon?')) return;
-    await deleteDoc(doc(db, 'coupons', id));
-    setCoupons((c) => c.filter((x) => x.id !== id));
-    toast.success('Coupon deleted');
+    try {
+      await deleteCouponById(id);
+      setCoupons((c) => c.filter((x) => x.id !== id));
+      toast.success('Coupon deleted');
+    } catch (err) {
+      toast.error(err?.message || 'Failed to delete coupon');
+    }
   };
 
   return (
@@ -89,8 +94,8 @@ export default function AdminCoupons() {
                 </button>
               </div>
               <div className="space-y-1.5 text-sm text-surface-600 dark:text-surface-300">
-                <p><span className="text-surface-400">Discount:</span> {coupon.type === 'percent' ? `${coupon.value}%` : `$${coupon.value}`} off</p>
-                {coupon.minOrder > 0 && <p><span className="text-surface-400">Min order:</span> ${coupon.minOrder}</p>}
+                <p><span className="text-surface-400">Discount:</span> {coupon.type === 'percent' ? `${coupon.value}%` : `${formatCurrency(coupon.value)}`} off</p>
+                {coupon.minOrder > 0 && <p><span className="text-surface-400">Min order:</span> {formatCurrency(coupon.minOrder)}</p>}
                 <p><span className="text-surface-400">Used:</span> {coupon.usedCount || 0}{coupon.maxUses ? `/${coupon.maxUses}` : ''} times</p>
                 <p className="text-xs text-surface-400">
                   Created {coupon.createdAt?.toDate ? format(coupon.createdAt.toDate(), 'MMM d, yyyy') : '-'}
@@ -119,7 +124,7 @@ export default function AdminCoupons() {
                   <label className="text-sm font-medium block mb-1">Type</label>
                   <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="input">
                     <option value="percent">Percentage (%)</option>
-                    <option value="fixed">Fixed ($)</option>
+                    <option value="fixed">Fixed amount</option>
                   </select>
                 </div>
                 <div>
@@ -129,7 +134,7 @@ export default function AdminCoupons() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm font-medium block mb-1">Min Order ($)</label>
+                  <label className="text-sm font-medium block mb-1">Min Order</label>
                   <input type="number" min="0" step="0.01" value={form.minOrder} onChange={(e) => setForm({ ...form, minOrder: e.target.value })} className="input" placeholder="0 (any)" />
                 </div>
                 <div>

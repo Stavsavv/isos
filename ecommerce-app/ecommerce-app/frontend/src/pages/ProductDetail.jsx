@@ -19,6 +19,7 @@ import {
   SHOT_NUMBER_STATUS,
   normalizeShotNumberEntries,
 } from "../constants/fysiggia.js";
+import { formatCurrency } from "../config/app.js";
 import toast from "react-hot-toast";
 import {
   Star,
@@ -247,7 +248,7 @@ export default function ProductDetail() {
           </h1>
 
           <p className="text-3xl font-bold text-primary-500 mb-4">
-            ${product.price?.toFixed(2)}
+            {formatCurrency(product.price)}
           </p>
 
           {/* Rich Text Description */}

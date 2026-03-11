@@ -103,6 +103,12 @@ export default function Navbar() {
             <Link to="/products" className="btn-ghost text-sm">
               {t("nav.products")}
             </Link>
+            <Link to="/about" className="btn-ghost text-sm">
+              {language === "el" ? "Σχετικά" : "About"}
+            </Link>
+            <Link to="/contact" className="btn-ghost text-sm">
+              {language === "el" ? "Επικοινωνία" : "Contact"}
+            </Link>
 
             <button
               onClick={toggleLanguage}
@@ -258,6 +264,18 @@ export default function Navbar() {
                 className="block px-3 py-2 rounded-lg hover:bg-surface-100 dark:hover:bg-surface-800 text-sm"
               >
                 {t("nav.products")}
+              </Link>
+              <Link
+                to="/about"
+                className="block px-3 py-2 rounded-lg hover:bg-surface-100 dark:hover:bg-surface-800 text-sm"
+              >
+                {language === "el" ? "Σχετικά" : "About"}
+              </Link>
+              <Link
+                to="/contact"
+                className="block px-3 py-2 rounded-lg hover:bg-surface-100 dark:hover:bg-surface-800 text-sm"
+              >
+                {language === "el" ? "Επικοινωνία" : "Contact"}
               </Link>
               {user ? (
                 <>

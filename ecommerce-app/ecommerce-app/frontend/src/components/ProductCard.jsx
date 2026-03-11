@@ -5,6 +5,7 @@ import { useCart } from '../context/CartContext.jsx';
 import { useWishlist } from '../context/WishlistContext.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { normalizeShotNumberEntries, SHOT_NUMBER_STATUS } from '../constants/fysiggia.js';
+import { formatCurrency } from '../config/app.js';
 import toast from 'react-hot-toast';
 
 export default function ProductCard({ product }) {
@@ -136,7 +137,7 @@ export default function ProductCard({ product }) {
 
           <div className="flex items-center justify-between">
             <span className="text-lg font-bold text-surface-900 dark:text-white">
-              ${product.price?.toFixed(2)}
+              {formatCurrency(product.price)}
             </span>
             <button
               onClick={handleAddToCart}

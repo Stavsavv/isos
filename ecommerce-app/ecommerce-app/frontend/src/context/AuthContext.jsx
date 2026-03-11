@@ -8,11 +8,22 @@ import {
   sendPasswordResetEmail,
   updateProfile,
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
 import { auth, db, firebaseInitError, missingVars } from '../firebase/config';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 
 const AuthContext = createContext(null);
+
+function normalizeUserProfile(firebaseUser, profile = {}) {
+  return {
+    uid: firebaseUser.uid,
+    name: profile.name || firebaseUser.displayName || '',
+    email: profile.email || firebaseUser.email || '',
+    role: profile.role === 'admin' ? 'admin' : 'user',
+    createdAt: profile.createdAt || null,
+    updatedAt: profile.updatedAt || null,
+  };
+}
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -31,6 +42,7 @@ export function AuthProvider({ children }) {
       email,
       role: 'user',
       createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
     };
     await setDoc(doc(db, 'users', firebaseUser.uid), userDoc);
     return firebaseUser;
@@ -49,20 +61,6 @@ export function AuthProvider({ children }) {
     return sendPasswordResetEmail(auth, email);
   }
 
-  async function fetchUserProfile(uid) {
-    try {
-      const docRef = doc(db, 'users', uid);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        setUserProfile(docSnap.data());
-        return docSnap.data();
-      }
-    } catch (error) {
-      console.error('Error fetching user profile:', error);
-    }
-    return null;
-  }
-
   useEffect(() => {
     if (firebaseInitError || !auth || !db) {
       const detail = missingVars.length > 0
@@ -74,6 +72,7 @@ export function AuthProvider({ children }) {
     }
 
     let active = true;
+    let unsubscribeProfile = () => {};
     const timeoutId = setTimeout(() => {
       if (active) setLoading(false);
     }, 5000);
@@ -84,13 +83,49 @@ export function AuthProvider({ children }) {
         if (!active) return;
 
         setUser(firebaseUser);
+        unsubscribeProfile();
+        unsubscribeProfile = () => {};
+
         if (firebaseUser) {
-          await fetchUserProfile(firebaseUser.uid);
+          const profileRef = doc(db, 'users', firebaseUser.uid);
+          unsubscribeProfile = onSnapshot(
+            profileRef,
+            async (docSnap) => {
+              if (!active) return;
+
+              if (!docSnap.exists()) {
+                const userDoc = {
+                  uid: firebaseUser.uid,
+                  name: firebaseUser.displayName || '',
+                  email: firebaseUser.email || '',
+                  role: 'user',
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                };
+                await setDoc(profileRef, userDoc, { merge: true });
+                setUserProfile(normalizeUserProfile(firebaseUser, userDoc));
+                clearTimeout(timeoutId);
+                setLoading(false);
+                return;
+              }
+
+              setUserProfile(normalizeUserProfile(firebaseUser, docSnap.data()));
+              clearTimeout(timeoutId);
+              setLoading(false);
+            },
+            (error) => {
+              console.error('Error subscribing to user profile:', error);
+              setUserProfile(normalizeUserProfile(firebaseUser));
+              clearTimeout(timeoutId);
+              setLoading(false);
+            },
+          );
         } else {
           setUserProfile(null);
+          unsubscribeProfile = () => {};
+          clearTimeout(timeoutId);
+          setLoading(false);
         }
-        setLoading(false);
-        clearTimeout(timeoutId);
       });
     } catch (error) {
       console.error('Error initializing auth state listener:', error);
@@ -102,6 +137,7 @@ export function AuthProvider({ children }) {
       active = false;
       clearTimeout(timeoutId);
       unsubscribe();
+      unsubscribeProfile();
     };
   }, []);
 
@@ -116,7 +152,6 @@ export function AuthProvider({ children }) {
     login,
     logout,
     resetPassword,
-    fetchUserProfile,
   };
 
   return (

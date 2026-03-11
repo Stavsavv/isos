@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { useWishlist } from '../context/WishlistContext.jsx';
 import { useCart } from '../context/CartContext.jsx';
 import { Heart, ShoppingCart, Trash2 } from 'lucide-react';
+import { formatCurrency } from '../config/app.js';
 import toast from 'react-hot-toast';
 
 export default function Wishlist() {
@@ -32,7 +33,7 @@ export default function Wishlist() {
             </Link>
             <div className="p-4">
               <Link to={`/products/${item.id}`} className="font-medium text-sm hover:text-primary-600 transition-colors line-clamp-2">{item.name}</Link>
-              <p className="text-primary-500 font-bold mt-1">${item.price?.toFixed(2)}</p>
+              <p className="text-primary-500 font-bold mt-1">{formatCurrency(item.price)}</p>
               <div className="flex gap-2 mt-3">
                 <button
                   onClick={async () => { await addToCart(item, 1); toast.success('Added to cart!'); }}

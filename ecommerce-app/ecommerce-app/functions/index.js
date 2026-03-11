@@ -1,627 +1,349 @@
-﻿const functions = require("firebase-functions");
-const admin = require("firebase-admin");
-const stripe = require("stripe");
+const functions = require("firebase-functions");
 const cors = require("cors")({ origin: true });
+const { db } = require("./lib/firebase");
+const { assertAuthenticated, requireAdmin, verifyBearerToken } = require("./lib/auth");
+const {
+  buildCheckoutSession,
+  finalizeOrderPayment,
+  validateCoupon,
+  getStripe,
+  assertStripeWebhookSecret,
+} = require("./checkout");
+const {
+  getAnalytics,
+  updateUserRole,
+  deleteUserProfile,
+  saveProduct,
+  deleteProduct,
+  createCoupon,
+  deleteCoupon,
+  updateOrderStatus,
+  deleteOrder,
+} = require("./admin");
 
-admin.initializeApp();
-const db = admin.firestore();
-const SHOT_NUMBER_STATUS = {
-  AVAILABLE: "available",
-  UNAVAILABLE: "unavailable",
-  HIDDEN: "hidden",
-};
+exports.createCheckoutSession = functions.https.onCall(async (data, context) => {
+  const auth = assertAuthenticated(context);
 
-function normalizeShotNumberEntries(value, fallbackShotNumbers = []) {
-  const source = Array.isArray(value) ? value : [];
-
-  const normalized = source
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return null;
-      const normalizedValue = String(entry.value ?? "").trim();
-      if (!normalizedValue) return null;
-      const status =
-        entry.status === SHOT_NUMBER_STATUS.HIDDEN ||
-        entry.status === SHOT_NUMBER_STATUS.UNAVAILABLE ||
-        entry.status === SHOT_NUMBER_STATUS.AVAILABLE
-          ? entry.status
-          : entry.available === false
-            ? SHOT_NUMBER_STATUS.UNAVAILABLE
-            : SHOT_NUMBER_STATUS.AVAILABLE;
-      const rawStock = Number(entry.stock);
-      const stock = Number.isFinite(rawStock) && rawStock > 0 ? Math.floor(rawStock) : 0;
-      return {
-        value: normalizedValue,
-        status,
-        stock: status === SHOT_NUMBER_STATUS.AVAILABLE ? stock : 0,
-      };
-    })
-    .filter(Boolean);
-
-  if (normalized.length) {
-    const seen = new Set();
-    return normalized.filter((entry) => {
-      if (seen.has(entry.value)) return false;
-      seen.add(entry.value);
-      return true;
+  try {
+    return await buildCheckoutSession({
+      items: data?.items,
+      shippingAddress: data?.shippingAddress,
+      couponCode: data?.couponCode,
+      userId: auth.uid,
+      successUrl: data?.successUrl,
+      cancelUrl: data?.cancelUrl,
     });
+  } catch (error) {
+    console.error("Error creating checkout session:", error);
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    throw new functions.https.HttpsError("internal", error.message);
   }
+});
 
-  const fallbackValues = Array.isArray(fallbackShotNumbers)
-    ? fallbackShotNumbers
-    : fallbackShotNumbers
-      ? [fallbackShotNumbers]
-      : [];
-  const seen = new Set();
-  return fallbackValues
-    .map((shotNumber) => String(shotNumber))
-    .filter((value) => {
-      if (!value || seen.has(value)) return false;
-      seen.add(value);
-      return true;
-    })
-    .map((value) => ({
-      value,
-      status: SHOT_NUMBER_STATUS.AVAILABLE,
-      stock: 0,
-    }));
-}
-
-function reduceProductStock(productData, reduction) {
-  const totalReduction = reduction.total || 0;
-  const byShotNumber = reduction.byShotNumber || {};
-  const hasShotNumberReduction = Object.keys(byShotNumber).length > 0;
-
-  if (!hasShotNumberReduction) {
-    const currentStock = Number(productData?.stock) || 0;
-    return {
-      stock: Math.max(0, currentStock - totalReduction),
-      shotgunShells: productData?.shotgunShells ?? null,
-      numbers: productData?.numbers ?? null,
-    };
-  }
-
-  const normalizedNumbers = normalizeShotNumberEntries(
-    productData?.shotgunShells?.numbers || productData?.numbers,
-    productData?.shotgunShells?.shotNumber || productData?.shotNumber,
-  );
-
-  const nextNumbers = normalizedNumbers.map((entry) => {
-    const qty = Number(byShotNumber[entry.value]) || 0;
-    if (qty <= 0) return entry;
-    const nextStock = Math.max(0, (entry.stock || 0) - qty);
-    return {
-      ...entry,
-      status:
-        nextStock > 0 ? SHOT_NUMBER_STATUS.AVAILABLE : SHOT_NUMBER_STATUS.UNAVAILABLE,
-      stock: nextStock > 0 ? nextStock : 0,
-    };
-  });
-
-  const totalStock = nextNumbers.reduce((sum, entry) => (
-    entry.status === SHOT_NUMBER_STATUS.AVAILABLE ? sum + (entry.stock || 0) : sum
-  ), 0);
-
-  return {
-    stock: totalStock,
-    shotgunShells: {
-      ...(productData?.shotgunShells || {}),
-      numbers: nextNumbers,
-      shotNumber: nextNumbers
-        .filter((entry) => entry.status !== SHOT_NUMBER_STATUS.HIDDEN)
-        .map((entry) => entry.value),
-    },
-    numbers: nextNumbers,
-  };
-}
-
-function getOrderItemProductId(item) {
-  return item?.id || item?.productId || item?.product_id || item?.product?.id || null;
-}
-
-function getOrderItemShotNumber(item) {
-  return item?.shotNumber || item?.number || item?.shot_number || item?.selectedShotNumber || null;
-}
-
-function buildReductionByProduct(orderItems) {
-  const reductionByProduct = new Map();
-
-  for (const item of orderItems || []) {
-    const productId = getOrderItemProductId(item);
-    if (!productId) continue;
-    const quantity = Number(item.quantity) || 0;
-    if (quantity <= 0) continue;
-    const key = String(productId);
-    if (!reductionByProduct.has(key)) {
-      reductionByProduct.set(key, { total: 0, byShotNumber: {} });
-    }
-    const reduction = reductionByProduct.get(key);
-    reduction.total += quantity;
-    const shotNumber = getOrderItemShotNumber(item);
-    if (shotNumber) {
-      const shotKey = String(shotNumber);
-      reduction.byShotNumber[shotKey] = (reduction.byShotNumber[shotKey] || 0) + quantity;
-    }
-  }
-
-  return reductionByProduct;
-}
-
-async function applyOrderStockUpdatesAtomic(orderItems) {
-  const reductionByProduct = buildReductionByProduct(orderItems);
-  if (!reductionByProduct.size) return;
-
-  await db.runTransaction(async (transaction) => {
-    for (const [productId, reduction] of reductionByProduct.entries()) {
-      const productRef = db.collection("products").doc(productId);
-      const productSnap = await transaction.get(productRef);
-      if (!productSnap.exists) continue;
-      const next = reduceProductStock(productSnap.data() || {}, reduction);
-      transaction.update(productRef, {
-        stock: next.stock,
-        shotgunShells: next.shotgunShells,
-        numbers: next.numbers,
-      });
-    }
-  });
-}
-
-// Initialize Stripe using environment variable (not deprecated functions.config())
-const getStripe = () => {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key)
-    throw new Error("STRIPE_SECRET_KEY is not set in environment variables");
-  return stripe(key);
-};
-
-// ==========================================
-// CREATE STRIPE CHECKOUT SESSION
-// ==========================================
-exports.createCheckoutSession = functions.https.onCall(
-  async (data, context) => {
-    if (!context.auth) {
-      throw new functions.https.HttpsError(
-        "unauthenticated",
-        "Must be authenticated",
-      );
+exports.createCheckoutSessionHttp = functions.https.onRequest(async (req, res) => {
+  return cors(req, res, async () => {
+    if (req.method === "OPTIONS") {
+      return res.status(204).send("");
     }
 
-    const {
-      items,
-      shippingAddress,
-      couponCode,
-      userId,
-      successUrl,
-      cancelUrl,
-    } = data;
-
-    if (!items || items.length === 0) {
-      throw new functions.https.HttpsError("invalid-argument", "Cart is empty");
+    if (req.method !== "POST") {
+      return res.status(405).json({ error: "Method not allowed" });
     }
 
     try {
-      const stripeClient = getStripe();
-
-      const lineItems = items.map((item) => ({
-        price_data: {
-          currency: "usd",
-          product_data: {
-            name: item.name,
-            images: item.image ? [item.image] : [],
-          },
-          unit_amount: Math.round(item.price * 100),
-        },
-        quantity: item.quantity,
-      }));
-
-      const subtotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
-      if (subtotal < 50) {
-        lineItems.push({
-          price_data: {
-            currency: "usd",
-            product_data: { name: "Shipping" },
-            unit_amount: 499,
-          },
-          quantity: 1,
-        });
-      }
-
-      let discounts = [];
-      if (couponCode) {
-        const couponSnap = await db
-          .collection("coupons")
-          .where("code", "==", couponCode.toUpperCase())
-          .where("active", "==", true)
-          .limit(1)
-          .get();
-
-        if (!couponSnap.empty) {
-          const coupon = couponSnap.docs[0].data();
-          const stripeCoupon = await stripeClient.coupons.create({
-            ...(coupon.type === "percent"
-              ? { percent_off: coupon.value }
-              : {
-                  amount_off: Math.round(coupon.value * 100),
-                  currency: "usd",
-                }),
-            duration: "once",
-          });
-          discounts = [{ coupon: stripeCoupon.id }];
-        }
-      }
-
-      const orderRef = await db.collection("orders").add({
-        userId,
-        items,
-        shippingAddress,
-        totalPrice: 0,
-        paymentStatus: "pending",
-        orderStatus: "processing",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      const decodedToken = await verifyBearerToken(req.headers.authorization || "");
+      const result = await buildCheckoutSession({
+        items: req.body?.items,
+        shippingAddress: req.body?.shippingAddress,
+        couponCode: req.body?.couponCode,
+        userId: decodedToken.uid,
+        successUrl: req.body?.successUrl,
+        cancelUrl: req.body?.cancelUrl,
       });
 
-      const session = await stripeClient.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: lineItems,
-        mode: "payment",
-        discounts,
-        success_url: `${successUrl}&session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: cancelUrl,
-        metadata: { orderId: orderRef.id, userId },
-        shipping_address_collection: {
-          allowed_countries: ["US", "CA", "GB", "AU"],
-        },
-      });
-
-      return { sessionId: session.id, orderId: orderRef.id };
+      return res.status(200).json(result);
     } catch (error) {
-      console.error("Error creating checkout session:", error);
-      throw new functions.https.HttpsError("internal", error.message);
+      console.error("Error creating checkout session (HTTP):", error);
+      const message = error?.message || "Failed to create checkout session";
+      const status = error instanceof functions.https.HttpsError ? 400 : 500;
+      return res.status(status).json({ error: message });
     }
-  },
-);
+  });
+});
 
-// ==========================================
-// CREATE STRIPE CHECKOUT SESSION (HTTP + CORS)
-// ==========================================
-exports.createCheckoutSessionHttp = functions.https.onRequest(
-  async (req, res) => {
-    return cors(req, res, async () => {
-      if (req.method === "OPTIONS") {
-        return res.status(204).send("");
-      }
-
-      if (req.method !== "POST") {
-        return res.status(405).json({ error: "Method not allowed" });
-      }
-
-      try {
-        const authHeader = req.headers.authorization || "";
-        if (!authHeader.startsWith("Bearer ")) {
-          return res.status(401).json({ error: "Unauthorized" });
-        }
-
-        const idToken = authHeader.substring("Bearer ".length);
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
-        const userId = decodedToken.uid;
-
-        const { items, shippingAddress, couponCode, successUrl, cancelUrl } =
-          req.body || {};
-
-        if (!items || items.length === 0) {
-          return res.status(400).json({ error: "Cart is empty" });
-        }
-
-        const stripeClient = getStripe();
-
-        const lineItems = items.map((item) => ({
-          price_data: {
-            currency: "usd",
-            product_data: {
-              name: item.name,
-              images: item.image ? [item.image] : [],
-            },
-            unit_amount: Math.round(item.price * 100),
-          },
-          quantity: item.quantity,
-        }));
-
-        const subtotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
-        if (subtotal < 50) {
-          lineItems.push({
-            price_data: {
-              currency: "usd",
-              product_data: { name: "Shipping" },
-              unit_amount: 499,
-            },
-            quantity: 1,
-          });
-        }
-
-        let discounts = [];
-        if (couponCode) {
-          const couponSnap = await db
-            .collection("coupons")
-            .where("code", "==", couponCode.toUpperCase())
-            .where("active", "==", true)
-            .limit(1)
-            .get();
-
-          if (!couponSnap.empty) {
-            const coupon = couponSnap.docs[0].data();
-            const stripeCoupon = await stripeClient.coupons.create({
-              ...(coupon.type === "percent"
-                ? { percent_off: coupon.value }
-                : {
-                    amount_off: Math.round(coupon.value * 100),
-                    currency: "usd",
-                  }),
-              duration: "once",
-            });
-            discounts = [{ coupon: stripeCoupon.id }];
-          }
-        }
-
-        const orderRef = await db.collection("orders").add({
-          userId,
-          items,
-          shippingAddress,
-          totalPrice: 0,
-          paymentStatus: "pending",
-          orderStatus: "processing",
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-
-        const session = await stripeClient.checkout.sessions.create({
-          payment_method_types: ["card"],
-          line_items: lineItems,
-          mode: "payment",
-          discounts,
-          success_url: `${successUrl}&session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: cancelUrl,
-          metadata: { orderId: orderRef.id, userId },
-          shipping_address_collection: {
-            allowed_countries: ["US", "CA", "GB", "AU"],
-          },
-        });
-
-        return res
-          .status(200)
-          .json({ sessionId: session.id, orderId: orderRef.id });
-      } catch (error) {
-        console.error("Error creating checkout session (HTTP):", error);
-        return res.status(500).json({
-          error: error.message || "Failed to create checkout session",
-        });
-      }
-    });
-  },
-);
-
-// ==========================================
-// STRIPE WEBHOOK - Handle payment events
-// ==========================================
 exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
   const stripeClient = getStripe();
-  const sig = req.headers["stripe-signature"];
+  const signature = req.headers["stripe-signature"];
+  assertStripeWebhookSecret();
   const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   let event;
   try {
-    event = stripeClient.webhooks.constructEvent(
-      req.rawBody,
-      sig,
-      endpointSecret,
-    );
-  } catch (err) {
-    console.error("Webhook signature verification failed:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    event = stripeClient.webhooks.constructEvent(req.rawBody, signature, endpointSecret);
+  } catch (error) {
+    console.error("Webhook signature verification failed:", error.message);
+    return res.status(400).send(`Webhook Error: ${error.message}`);
   }
 
-  if (event.type === "checkout.session.completed") {
+  if (
+    event.type === "checkout.session.completed" ||
+    event.type === "checkout.session.async_payment_succeeded"
+  ) {
     const session = event.data.object;
-    const { orderId, userId } = session.metadata;
+    const { orderId, userId } = session.metadata || {};
+
+    if (!orderId || !userId) {
+      return res.json({ received: true });
+    }
 
     try {
-      const batch = db.batch();
-
-      const orderRef = db.collection("orders").doc(orderId);
-      const orderSnap = await orderRef.get();
-      if (!orderSnap.exists) throw new Error("Order not found");
-
-      const orderData = orderSnap.data();
-      const totalPaid = session.amount_total / 100;
-
-      batch.update(orderRef, {
-        paymentStatus: "paid",
-        orderStatus: "processing",
-        totalPrice: totalPaid,
-        stripeSessionId: session.id,
-        paidAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      await applyOrderStockUpdatesAtomic(orderData.items);
-
-      const cartRef = db.collection("carts").doc(userId);
-      batch.set(cartRef, {
-        items: [],
-        coupon: null,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      await batch.commit();
+      await finalizeOrderPayment({ orderId, userId, session });
       console.log(`Order ${orderId} confirmed for user ${userId}`);
+      console.log(JSON.stringify({
+        event: "order.finalized",
+        orderId,
+        userId,
+        sourceEvent: event.type,
+      }));
     } catch (error) {
+      if (error?.message === "ORDER_NOT_FOUND" || error?.message === "ORDER_USER_MISMATCH") {
+        return res.json({ received: true });
+      }
       console.error("Error processing webhook:", error);
       return res.status(500).send("Webhook processing failed");
     }
   }
 
-  res.json({ received: true });
+  return res.json({ received: true });
 });
 
-// ==========================================
-// VALIDATE COUPON
-// ==========================================
 exports.validateCoupon = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError(
-      "unauthenticated",
-      "Must be authenticated",
-    );
-  }
-
-  const { code, subtotal } = data;
-
-  if (!code) {
-    throw new functions.https.HttpsError(
-      "invalid-argument",
-      "Coupon code is required",
-    );
-  }
+  assertAuthenticated(context);
 
   try {
-    const couponSnap = await db
-      .collection("coupons")
-      .where("code", "==", code.toUpperCase())
-      .where("active", "==", true)
-      .limit(1)
-      .get();
-
-    if (couponSnap.empty) {
-      return { valid: false, message: "Coupon not found or expired" };
-    }
-
-    const couponDoc = couponSnap.docs[0];
-    const coupon = couponDoc.data();
-
-    if (coupon.minOrder && subtotal < coupon.minOrder) {
-      return {
-        valid: false,
-        message: `Minimum order of $${coupon.minOrder} required`,
-      };
-    }
-
-    if (coupon.maxUses && coupon.usedCount >= coupon.maxUses) {
-      return { valid: false, message: "Coupon has reached maximum uses" };
-    }
-
-    return {
-      valid: true,
-      coupon: {
-        id: couponDoc.id,
-        code: coupon.code,
-        type: coupon.type,
-        value: coupon.value,
-      },
-    };
+    return await validateCoupon({
+      code: data?.code,
+      subtotal: data?.subtotal,
+    });
   } catch (error) {
-    throw new functions.https.HttpsError(
-      "internal",
-      "Failed to validate coupon",
-    );
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Failed to validate coupon:", error);
+    throw new functions.https.HttpsError("internal", "Failed to validate coupon");
   }
 });
 
-// ==========================================
-// CREATE ORDER (Secure server-side)
-// ==========================================
 exports.createOrder = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError(
-      "unauthenticated",
-      "Must be authenticated",
-    );
-  }
-
-  const { items, shippingAddress, totalPrice, stripeSessionId } = data;
-
-  if (!items || items.length === 0) {
+  const auth = assertAuthenticated(context);
+  const stripeSessionId = data?.stripeSessionId;
+  if (!stripeSessionId) {
     throw new functions.https.HttpsError(
       "invalid-argument",
-      "Items are required",
+      "stripeSessionId is required",
     );
   }
 
   try {
-    const orderRef = await db.collection("orders").add({
-      userId: context.auth.uid,
-      items,
-      shippingAddress,
-      totalPrice,
-      stripeSessionId: stripeSessionId || null,
-      paymentStatus: "paid",
-      orderStatus: "processing",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    const stripeClient = getStripe();
+    const session = await stripeClient.checkout.sessions.retrieve(stripeSessionId);
+    if (!session) {
+      throw new functions.https.HttpsError("not-found", "Stripe session not found");
+    }
 
-    const batch = db.batch();
-    await applyOrderStockUpdatesAtomic(items);
+    if (session.payment_status !== "paid") {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "Payment not completed",
+      );
+    }
 
-    batch.set(db.collection("carts").doc(context.auth.uid), {
-      items: [],
-      coupon: null,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    const metadata = session.metadata || {};
+    const orderId = metadata.orderId;
+    const userId = metadata.userId;
+    if (!orderId || !userId) {
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        "Missing order metadata",
+      );
+    }
 
-    await batch.commit();
+    const actorProfile = await db.collection("users").doc(auth.uid).get();
+    const isAdminUser = actorProfile.exists && actorProfile.data()?.role === "admin";
+    if (!isAdminUser && auth.uid !== userId) {
+      throw new functions.https.HttpsError(
+        "permission-denied",
+        "Not allowed to finalize this order",
+      );
+    }
 
-    return { orderId: orderRef.id };
+    await finalizeOrderPayment({ orderId, userId, session });
+    return { orderId };
   } catch (error) {
-    console.error("Error creating order:", error);
-    throw new functions.https.HttpsError("internal", "Failed to create order");
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Error finalizing order:", error);
+    throw new functions.https.HttpsError("internal", "Failed to finalize order");
   }
 });
 
-// ==========================================
-// GET ADMIN ANALYTICS
-// ==========================================
 exports.getAnalytics = functions.https.onCall(async (data, context) => {
-  if (!context.auth) {
-    throw new functions.https.HttpsError(
-      "unauthenticated",
-      "Must be authenticated",
-    );
-  }
-
-  const userSnap = await db.collection("users").doc(context.auth.uid).get();
-  if (!userSnap.exists || userSnap.data().role !== "admin") {
-    throw new functions.https.HttpsError(
-      "permission-denied",
-      "Admin access required",
-    );
-  }
+  const auth = assertAuthenticated(context);
+  await requireAdmin(auth.uid);
 
   try {
-    const [usersSnap, productsSnap, ordersSnap] = await Promise.all([
-      db.collection("users").get(),
-      db.collection("products").get(),
-      db.collection("orders").get(),
-    ]);
-
-    const orders = ordersSnap.docs.map((d) => d.data());
-    const paidOrders = orders.filter((o) => o.paymentStatus === "paid");
-    const revenue = paidOrders.reduce((s, o) => s + (o.totalPrice || 0), 0);
-
-    return {
-      users: usersSnap.size,
-      products: productsSnap.size,
-      orders: ordersSnap.size,
-      revenue: Math.round(revenue * 100) / 100,
-    };
+    return await getAnalytics();
   } catch (error) {
-    throw new functions.https.HttpsError(
-      "internal",
-      "Failed to fetch analytics",
-    );
+    console.error("Failed to fetch analytics:", error);
+    throw new functions.https.HttpsError("internal", "Failed to fetch analytics");
   }
 });
 
-// ==========================================
-// SCHEDULED: Clean up old pending orders
-// ==========================================
+exports.updateUserRole = functions.https.onCall(async (data, context) => {
+  const auth = assertAuthenticated(context);
+
+  try {
+    return await updateUserRole({
+      actorUid: auth.uid,
+      targetUserId: data?.targetUserId,
+      role: data?.role,
+    });
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Failed to update user role:", error);
+    throw new functions.https.HttpsError("internal", "Failed to update user role");
+  }
+});
+
+exports.deleteUserProfile = functions.https.onCall(async (data, context) => {
+  const auth = assertAuthenticated(context);
+
+  try {
+    return await deleteUserProfile({
+      actorUid: auth.uid,
+      targetUserId: data?.targetUserId,
+    });
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Failed to delete user profile:", error);
+    throw new functions.https.HttpsError("internal", "Failed to delete user profile");
+  }
+});
+
+exports.saveProduct = functions.https.onCall(async (data, context) => {
+  const auth = assertAuthenticated(context);
+
+  try {
+    return await saveProduct({
+      actorUid: auth.uid,
+      productId: data?.productId,
+      payload: data?.payload,
+    });
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Failed to save product:", error);
+    throw new functions.https.HttpsError("internal", "Failed to save product");
+  }
+});
+
+exports.deleteProduct = functions.https.onCall(async (data, context) => {
+  const auth = assertAuthenticated(context);
+
+  try {
+    return await deleteProduct({
+      actorUid: auth.uid,
+      productId: data?.productId,
+    });
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Failed to delete product:", error);
+    throw new functions.https.HttpsError("internal", "Failed to delete product");
+  }
+});
+
+exports.createCoupon = functions.https.onCall(async (data, context) => {
+  const auth = assertAuthenticated(context);
+
+  try {
+    return await createCoupon({
+      actorUid: auth.uid,
+      payload: data?.payload,
+    });
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Failed to create coupon:", error);
+    throw new functions.https.HttpsError("internal", "Failed to create coupon");
+  }
+});
+
+exports.deleteCoupon = functions.https.onCall(async (data, context) => {
+  const auth = assertAuthenticated(context);
+
+  try {
+    return await deleteCoupon({
+      actorUid: auth.uid,
+      couponId: data?.couponId,
+    });
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Failed to delete coupon:", error);
+    throw new functions.https.HttpsError("internal", "Failed to delete coupon");
+  }
+});
+
+exports.updateOrderStatus = functions.https.onCall(async (data, context) => {
+  const auth = assertAuthenticated(context);
+
+  try {
+    return await updateOrderStatus({
+      actorUid: auth.uid,
+      orderId: data?.orderId,
+      status: data?.status,
+    });
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Failed to update order status:", error);
+    throw new functions.https.HttpsError("internal", "Failed to update order status");
+  }
+});
+
+exports.deleteOrder = functions.https.onCall(async (data, context) => {
+  const auth = assertAuthenticated(context);
+
+  try {
+    return await deleteOrder({
+      actorUid: auth.uid,
+      orderId: data?.orderId,
+    });
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) {
+      throw error;
+    }
+    console.error("Failed to delete order:", error);
+    throw new functions.https.HttpsError("internal", "Failed to delete order");
+  }
+});
+
 exports.cleanupPendingOrders = functions.pubsub
   .schedule("every 24 hours")
-  .onRun(async (ctx) => {
+  .onRun(async () => {
     const cutoff = new Date();
     cutoff.setHours(cutoff.getHours() - 48);
 
@@ -632,12 +354,9 @@ exports.cleanupPendingOrders = functions.pubsub
       .get();
 
     const batch = db.batch();
-    snap.docs.forEach((d) => batch.delete(d.ref));
+    snap.docs.forEach((doc) => batch.delete(doc.ref));
     await batch.commit();
 
     console.log(`Cleaned up ${snap.size} stale pending orders`);
     return null;
   });
-
-
-

@@ -1,11 +1,18 @@
 ﻿import { useState, useEffect } from 'react';
-import { collection, getDocs, updateDoc, deleteDoc, doc, query, orderBy } from 'firebase/firestore';
+import {
+  collection,
+  getDocs,
+  query,
+  orderBy,
+} from 'firebase/firestore';
 import { db } from '../firebase/config.js';
 import AdminLayout from '../components/AdminLayout.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import toast from 'react-hot-toast';
-import { Trash2, Eye, X, ChevronDown } from 'lucide-react';
+import { Trash2, Eye, X } from 'lucide-react';
 import { format } from 'date-fns';
+import { deleteOrder as deleteOrderById, updateOrderStatus } from '../services/adminApi.js';
+import { formatCurrency } from '../config/app.js';
 
 const STATUSES = ['processing', 'shipped', 'delivered'];
 const STATUS_COLORS = {
@@ -13,6 +20,7 @@ const STATUS_COLORS = {
   shipped: 'bg-blue-100 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400',
   delivered: 'bg-green-100 text-green-700 dark:bg-green-500/10 dark:text-green-400',
 };
+
 
 export default function AdminOrders() {
   const [orders, setOrders] = useState([]);
@@ -22,31 +30,47 @@ export default function AdminOrders() {
 
   useEffect(() => {
     async function fetchOrders() {
-      const snap = await getDocs(query(collection(db, 'orders'), orderBy('createdAt', 'desc')));
-      setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      setLoading(false);
+      try {
+        const snap = await getDocs(query(collection(db, 'orders'), orderBy('createdAt', 'desc')));
+        setOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      } catch (err) {
+        console.error('Failed to load admin orders:', err);
+        toast.error(`Failed to load orders${err?.code ? ` (${err.code})` : ''}`);
+      } finally {
+        setLoading(false);
+      }
     }
     fetchOrders();
   }, []);
 
   const updateStatus = async (orderId, status) => {
     try {
-      await updateDoc(doc(db, 'orders', orderId), { orderStatus: status });
-      setOrders((o) => o.map((x) => x.id === orderId ? { ...x, orderStatus: status } : x));
+      await updateOrderStatus(orderId, status);
+
+      setOrders((o) =>
+        o.map((x) =>
+          x.id === orderId
+            ? { ...x, orderStatus: status }
+            : x,
+        ),
+      );
+
       toast.success('Order status updated');
-    } catch {
-      toast.error('Failed to update status');
+    } catch (err) {
+      console.error('Failed to update order status:', err);
+      toast.error(`Failed to update status${err?.code ? ` (${err.code})` : ''}`);
     }
   };
 
   const deleteOrder = async (orderId) => {
     if (!confirm('Delete this order?')) return;
     try {
-      await deleteDoc(doc(db, 'orders', orderId));
+      await deleteOrderById(orderId);
       setOrders((o) => o.filter((x) => x.id !== orderId));
       toast.success('Order deleted');
-    } catch {
-      toast.error('Failed to delete order');
+    } catch (err) {
+      console.error('Failed to delete order:', err);
+      toast.error(`Failed to delete order${err?.code ? ` (${err.code})` : ''}`);
     }
   };
 
@@ -101,7 +125,7 @@ export default function AdminOrders() {
                         {STATUSES.map((s) => <option key={s} value={s} className="bg-surface-50 text-surface-900 dark:bg-surface-900 dark:text-surface-50">{s}</option>)}
                       </select>
                     </td>
-                    <td className="p-4 text-right font-medium">${order.totalPrice?.toFixed(2)}</td>
+                    <td className="p-4 text-right font-medium">{formatCurrency(order.totalPrice)}</td>
                     <td className="p-4">
                       <div className="flex justify-end gap-2">
                         <button onClick={() => setSelectedOrder(order)} className="p-1.5 text-surface-500 hover:text-primary-500 transition-colors">
@@ -137,11 +161,11 @@ export default function AdminOrders() {
                     <div className="flex-1">
                       <p className="text-sm font-medium">{item.name}</p>
                       {item.shotNumber && (
-                        <p className="text-xs text-surface-500">Νούμερο: {item.shotNumber}</p>
+                        <p className="text-xs text-surface-500">Shot number: {item.shotNumber}</p>
                       )}
-                      <p className="text-xs text-surface-500">Ã—{item.quantity} â€” ${item.price?.toFixed(2)}</p>
+                      <p className="text-xs text-surface-500">x{item.quantity} - {formatCurrency(item.price)}</p>
                     </div>
-                    <span className="text-sm">${(item.price * item.quantity).toFixed(2)}</span>
+                    <span className="text-sm">{formatCurrency((item.price || 0) * (item.quantity || 0))}</span>
                   </div>
                 ))}
               </div>
@@ -157,7 +181,7 @@ export default function AdminOrders() {
               )}
               <div className="border-t border-surface-200 dark:border-surface-700 pt-4 flex justify-between font-bold">
                 <span>Total</span>
-                <span className="text-primary-500">${selectedOrder.totalPrice?.toFixed(2)}</span>
+                <span className="text-primary-500">{formatCurrency(selectedOrder.totalPrice)}</span>
               </div>
             </div>
           </div>
@@ -166,5 +190,4 @@ export default function AdminOrders() {
     </AdminLayout>
   );
 }
-
 

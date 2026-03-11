@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext.jsx';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../firebase/config.js';
+import { formatCurrency } from '../config/app.js';
 import { Minus, Plus, Trash2, ShoppingBag, Tag, X } from 'lucide-react';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import toast from 'react-hot-toast';
@@ -18,17 +19,23 @@ export default function Cart() {
     if (!couponCode.trim()) return;
     setValidatingCoupon(true);
     try {
+      if (!functions) {
+        throw new Error('Firebase Functions is not configured');
+      }
       const validateCoupon = httpsCallable(functions, 'validateCoupon');
       const result = await validateCoupon({ code: couponCode.toUpperCase(), subtotal });
       if (result.data.valid) {
         await applyCoupon(result.data.coupon);
-        toast.success(`Coupon applied! You save $${result.data.coupon.type === 'percent' ? ((subtotal * result.data.coupon.value) / 100).toFixed(2) : result.data.coupon.value.toFixed(2)}`);
+        const discountAmount = result.data.coupon.type === 'percent'
+          ? (subtotal * result.data.coupon.value) / 100
+          : result.data.coupon.value;
+        toast.success(`Coupon applied! You save ${formatCurrency(discountAmount)}`);
         setCouponCode('');
       } else {
         toast.error(result.data.message || 'Invalid coupon');
       }
-    } catch {
-      toast.error('Failed to validate coupon');
+    } catch (error) {
+      toast.error(error?.message || 'Failed to validate coupon');
     } finally {
       setValidatingCoupon(false);
     }
@@ -62,7 +69,7 @@ export default function Cart() {
                 <Link to={`/products/${item.productId || item.id}`} className="font-medium hover:text-primary-600 transition-colors line-clamp-2">
                   {item.name}
                 </Link>
-                <p className="text-primary-500 font-bold mt-1">${item.price.toFixed(2)}</p>
+                <p className="text-primary-500 font-bold mt-1">{formatCurrency(item.price)}</p>
                 {item.shotNumber && (
                   <p className="text-xs text-surface-500 mt-1">
                     Νούμερο: {item.shotNumber} | Ποσότητα: {item.quantity} κουτί | Απόθεμα: {item.stock}
@@ -86,7 +93,7 @@ export default function Cart() {
                     </button>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="font-semibold">${(item.price * item.quantity).toFixed(2)}</span>
+                    <span className="font-semibold">{formatCurrency(item.price * item.quantity)}</span>
                     <button
                       onClick={() => removeFromCart(item.cartItemId || item.id)}
                       className="p-1.5 text-surface-400 hover:text-red-500 transition-colors"
@@ -112,7 +119,7 @@ export default function Cart() {
                 <div>
                   <p className="text-green-700 dark:text-green-400 font-medium text-sm">{coupon.code}</p>
                   <p className="text-green-600 dark:text-green-500 text-xs">
-                    {coupon.type === 'percent' ? `${coupon.value}% off` : `$${coupon.value} off`}
+                    {coupon.type === 'percent' ? `${coupon.value}% off` : `${formatCurrency(coupon.value)} off`}
                   </p>
                 </div>
                 <button onClick={() => applyCoupon(null)} className="text-surface-400 hover:text-red-500"><X size={16} /></button>
@@ -139,21 +146,21 @@ export default function Cart() {
             <div className="space-y-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-surface-500">Subtotal</span>
-                <span>${subtotal.toFixed(2)}</span>
+                <span>{formatCurrency(subtotal)}</span>
               </div>
               {discount > 0 && (
                 <div className="flex justify-between text-green-600">
                   <span>Discount</span>
-                  <span>-${discount.toFixed(2)}</span>
+                  <span>-{formatCurrency(discount)}</span>
                 </div>
               )}
               <div className="flex justify-between">
                 <span className="text-surface-500">Shipping</span>
-                <span className={subtotal >= 50 ? 'text-green-600' : ''}>{subtotal >= 50 ? 'FREE' : '$4.99'}</span>
+                <span className={subtotal >= 50 ? 'text-green-600' : ''}>{subtotal >= 50 ? 'FREE' : formatCurrency(4.99)}</span>
               </div>
               <div className="border-t border-surface-200 dark:border-surface-700 pt-2 flex justify-between font-bold text-base">
                 <span>Total</span>
-                <span className="text-primary-500">${(total + (subtotal >= 50 ? 0 : 4.99)).toFixed(2)}</span>
+                <span className="text-primary-500">{formatCurrency(total + (subtotal >= 50 ? 0 : 4.99))}</span>
               </div>
             </div>
             <button

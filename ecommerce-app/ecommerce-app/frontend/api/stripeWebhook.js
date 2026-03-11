@@ -150,23 +150,21 @@ function buildReductionByProduct(orderItems) {
   return reductionByProduct;
 }
 
-async function applyOrderStockUpdatesAtomic(db, orderItems) {
+async function applyOrderStockUpdatesInTransaction(db, transaction, orderItems) {
   const reductionByProduct = buildReductionByProduct(orderItems);
   if (!reductionByProduct.size) return;
 
-  await db.runTransaction(async (transaction) => {
-    for (const [productId, reduction] of reductionByProduct.entries()) {
-      const productRef = db.collection("products").doc(productId);
-      const productSnap = await transaction.get(productRef);
-      if (!productSnap.exists) continue;
-      const next = reduceProductStock(productSnap.data() || {}, reduction);
-      transaction.update(productRef, {
-        stock: next.stock,
-        shotgunShells: next.shotgunShells,
-        numbers: next.numbers,
-      });
-    }
-  });
+  for (const [productId, reduction] of reductionByProduct.entries()) {
+    const productRef = db.collection("products").doc(productId);
+    const productSnap = await transaction.get(productRef);
+    if (!productSnap.exists) continue;
+    const next = reduceProductStock(productSnap.data() || {}, reduction);
+    transaction.update(productRef, {
+      stock: next.stock,
+      shotgunShells: next.shotgunShells,
+      numbers: next.numbers,
+    });
+  }
 }
 
 function initAdmin() {
@@ -180,10 +178,30 @@ function initAdmin() {
   });
 }
 
+function assertStripeEnv() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!key) throw new Error("STRIPE_SECRET_KEY is not set");
+  if (!key.startsWith("sk_")) throw new Error("STRIPE_SECRET_KEY must start with sk_");
+  if (!webhookSecret) throw new Error("STRIPE_WEBHOOK_SECRET is not set");
+  if (!webhookSecret.startsWith("whsec_")) {
+    throw new Error("STRIPE_WEBHOOK_SECRET must start with whsec_");
+  }
+}
+
+function assertAdminEnv() {
+  const { FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY } = process.env;
+  if (!FIREBASE_PROJECT_ID || !FIREBASE_CLIENT_EMAIL || !FIREBASE_PRIVATE_KEY) {
+    throw new Error("Missing Firebase Admin env vars");
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
   try {
+    assertStripeEnv();
+    assertAdminEnv();
     initAdmin();
 
     const signature = req.headers["stripe-signature"];
@@ -203,42 +221,75 @@ export default async function handler(req, res) {
       process.env.STRIPE_WEBHOOK_SECRET,
     );
 
-    if (event.type === "checkout.session.completed") {
+    if (
+      event.type === "checkout.session.completed" ||
+      event.type === "checkout.session.async_payment_succeeded"
+    ) {
       const session = event.data.object;
       const { orderId, userId } = session.metadata || {};
       if (!orderId || !userId) return res.status(200).json({ received: true });
 
       const db = getFirestore();
-      const orderRef = db.collection("orders").doc(orderId);
-      const orderSnap = await orderRef.get();
-      if (!orderSnap.exists) return res.status(200).json({ received: true });
-
-      const orderData = orderSnap.data();
       const totalPaid = (session.amount_total || 0) / 100;
 
-      const batch = db.batch();
-      batch.update(orderRef, {
-        paymentStatus: "paid",
-        orderStatus: "processing",
-        totalPrice: totalPaid,
-        stripeSessionId: session.id,
-        paidAt: FieldValue.serverTimestamp(),
+      await db.runTransaction(async (transaction) => {
+        const orderRef = db.collection("orders").doc(orderId);
+        const orderSnap = await transaction.get(orderRef);
+        if (!orderSnap.exists) throw new Error("ORDER_NOT_FOUND");
+
+        const orderData = orderSnap.data() || {};
+        const updates = {
+          paymentStatus: "paid",
+          orderStatus: "processing",
+          totalPrice: totalPaid,
+          stripeSessionId: session.id,
+          paidAt: FieldValue.serverTimestamp(),
+        };
+
+        if (orderData.stockApplied !== true) {
+          await applyOrderStockUpdatesInTransaction(
+            db,
+            transaction,
+            orderData.items || [],
+          );
+          updates.stockApplied = true;
+          updates.stockAppliedAt = FieldValue.serverTimestamp();
+        }
+
+        if (orderData.couponId && orderData.couponApplied !== true) {
+          const couponRef = db.collection("coupons").doc(orderData.couponId);
+          const couponSnap = await transaction.get(couponRef);
+          if (couponSnap.exists) {
+            transaction.update(couponRef, {
+              usedCount: FieldValue.increment(1),
+            });
+          }
+          updates.couponApplied = true;
+          updates.couponAppliedAt = FieldValue.serverTimestamp();
+        }
+
+        transaction.update(orderRef, updates);
+        transaction.set(db.collection("carts").doc(userId), {
+          items: [],
+          coupon: null,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
       });
-
-      await applyOrderStockUpdatesAtomic(db, orderData.items || []);
-
-      batch.set(db.collection("carts").doc(userId), {
-        items: [],
-        coupon: null,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-
-      await batch.commit();
       console.log(`Order ${orderId} marked as paid`);
+      console.log(JSON.stringify({
+        event: "order.finalized",
+        orderId,
+        userId,
+        totalPaid,
+        sourceEvent: event.type,
+      }));
     }
 
     return res.status(200).json({ received: true });
   } catch (error) {
+    if (error?.message === "ORDER_NOT_FOUND") {
+      return res.status(200).json({ received: true });
+    }
     console.error("stripeWebhook error:", error.message);
     return res.status(400).send(`Webhook Error: ${error.message}`);
   }

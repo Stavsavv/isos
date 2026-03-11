@@ -5,6 +5,7 @@ import AdminLayout from '../components/AdminLayout.jsx';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 import { Users, Package, ShoppingBag, DollarSign, TrendingUp } from 'lucide-react';
 import { format, subMonths, startOfMonth, endOfMonth } from 'date-fns';
+import { formatCurrency } from '../config/app.js';
 
 const DashboardCharts = lazy(() => import('./DashboardCharts.jsx'));
 
@@ -32,10 +33,12 @@ export default function AdminDashboard() {
   const [monthlyData, setMonthlyData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [recentOrders, setRecentOrders] = useState([]);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     async function fetchStats() {
       try {
+        setError('');
         const [usersSnap, productsSnap, ordersSnap] = await Promise.all([
           getDocs(collection(db, 'users')),
           getDocs(collection(db, 'products')),
@@ -43,9 +46,15 @@ export default function AdminDashboard() {
         ]);
 
         const orders = ordersSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        const revenue = orders.filter((o) => o.paymentStatus === 'paid').reduce((s, o) => s + (o.totalPrice || 0), 0);
+        const paidOrders = orders.filter((order) => order.paymentStatus === 'paid');
+        const revenue = paidOrders.reduce((sum, order) => sum + (Number(order.totalPrice) || 0), 0);
 
-        setStats({ users: usersSnap.size, products: productsSnap.size, orders: orders.length, revenue });
+        setStats({
+          users: usersSnap.size,
+          products: productsSnap.size,
+          orders: ordersSnap.size,
+          revenue: Math.round(revenue * 100) / 100,
+        });
         setRecentOrders(orders.slice(0, 5));
 
         // Monthly chart data - last 6 months
@@ -64,6 +73,7 @@ export default function AdminDashboard() {
         setMonthlyData(months);
       } catch (err) {
         console.error(err);
+        setError('Failed to load dashboard analytics.');
       } finally {
         setLoading(false);
       }
@@ -75,12 +85,17 @@ export default function AdminDashboard() {
 
   return (
     <AdminLayout title="Dashboard">
+      {error ? (
+        <div className="card mb-6 border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+          {error}
+        </div>
+      ) : null}
       {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard icon={Users} label="Total Users" value={stats.users} color="bg-blue-500" />
         <StatCard icon={Package} label="Products" value={stats.products} color="bg-violet-500" />
         <StatCard icon={ShoppingBag} label="Total Orders" value={stats.orders} color="bg-amber-500" />
-        <StatCard icon={DollarSign} label="Revenue" value={`$${stats.revenue.toFixed(2)}`} color="bg-primary-500" />
+        <StatCard icon={DollarSign} label="Revenue" value={formatCurrency(stats.revenue)} color="bg-primary-500" />
       </div>
 
       {/* Charts */}
@@ -112,7 +127,7 @@ export default function AdminDashboard() {
                     <td className="py-3">
                       <span className="badge bg-surface-100 dark:bg-surface-800 capitalize">{order.orderStatus || 'processing'}</span>
                     </td>
-                    <td className="py-3 text-right font-medium">${order.totalPrice?.toFixed(2)}</td>
+                    <td className="py-3 text-right font-medium">{formatCurrency(order.totalPrice)}</td>
                   </tr>
                 ))}
               </tbody>
